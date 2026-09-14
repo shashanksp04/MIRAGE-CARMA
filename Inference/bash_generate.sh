@@ -34,22 +34,29 @@ NUM_PROCESSES=8
 EMBED_MODEL_NAME="BAAI/bge-base-en-v1.5"
 TEST_MODEL="meta-llama/Llama-3.2-11B-Vision-Instruct"
 DEVICE="None"
-# Use an exact key from rag_agent/ablation_configs.json.
-ABLATION_ID="ablation_8_full_domain_filtered"
+# Use an exact key from rag_agent/ablation_configs.json; callers may override it.
+ABLATION_ID="${ABLATION_ID:-ablation_10_full_no_db_no_crop_dict_no_domain_filter}"
 
 # Enable only for models/runs that benefit from a single labeled image panel.
 COMBINE_INPUT_IMAGES="false"
 
 # Inference database lifecycle.
 BASE_COLLECTION="mirage_base"
-USE_BASE_COLLECTION="base"
+USE_BASE_COLLECTION="false"
 RUNTIME_MODE="fresh"       # resume or fresh
 SNAPSHOT_RUNTIME="false"    # true creates a snapshot before cleanup
+
+# db_on/crop_dict_on are descriptive config fields; the inference driver uses
+# these explicit switches for the corresponding run-level behavior.
+QUERY_ENRICHMENT_ARGS=()
+if [[ "$ABLATION_ID" == "ablation_10_full_no_db_no_crop_dict_no_domain_filter" ]]; then
+    QUERY_ENRICHMENT_ARGS+=(--disable_query_enrichment)
+fi
 
 # CropDatabase.json is resolved relative to this script's directory by generate.py.
 CROP_DICTIONARY_PATH="CropDatabase.json"
 
-echo "Inference $MODEL_NAME on $BENCH_TYPE Benchmark"
+echo "Inference $MODEL_NAME on $BENCH_TYPE Benchmark (ablation_id=$ABLATION_ID)"
 
 # Inference results will be saved in the following directory
 OUTPUT_DIR="results/${BENCH_TYPE}_benchmark"
@@ -73,7 +80,8 @@ python generate.py \
     --base_collection "$BASE_COLLECTION" \
     --use_base_collection "$USE_BASE_COLLECTION" \
     --runtime_mode "$RUNTIME_MODE" \
-    # --ablation_id "$ABLATION_ID" \
+    --ablation_id "$ABLATION_ID" \
+    "${QUERY_ENRICHMENT_ARGS[@]}" \
     $(if [ "$SNAPSHOT_RUNTIME" = "true" ]; then echo "--snapshot_runtime"; fi)
 # -- allowed_states California "New York" Texas
 
