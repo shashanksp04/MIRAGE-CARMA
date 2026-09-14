@@ -143,6 +143,11 @@ def _is_soft_rag_failure(answer, error):
         return True
     if answer is None:
         return True
+    # Some model/server combinations emit tool-call syntax as ordinary text
+    # instead of returning a structured function call. Never pass that protocol
+    # text downstream as if it were retrieved evidence.
+    if re.search(r"<\s*/?\s*tool_call\b", answer, flags=re.IGNORECASE):
+        return True
     if len(answer.strip()) < 30:
         return True
     return False
