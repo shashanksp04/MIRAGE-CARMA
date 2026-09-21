@@ -1,6 +1,6 @@
-# MIRAGE-RAG
+# MIRAGE-CARMA: Context-Adaptive Retrieval with Metadata Awareness for Multimodal Reasoning
 
-MIRAGE-RAG is an end-to-end agricultural retrieval-augmented generation system built for large-scale batch inference. It combines offline knowledge ingestion, metadata-aware retrieval, confidence-guided web augmentation, and multi-process GPU runtime orchestration.
+MIRAGE-CARMA is an end-to-end agricultural retrieval-augmented generation system built for large-scale batch inference. It combines offline knowledge ingestion, metadata-aware retrieval, confidence-guided web augmentation, and multi-process GPU runtime orchestration.
 
 This codebase is built on top of the MIRAGE benchmark project and extends it with a production-style RAG pipeline, ingestion stack, and ablation-driven runtime controls.
 
@@ -76,7 +76,7 @@ flowchart TB
 
 ```bash
 git clone <repository-url>
-cd <repo-directory>   # checkout directory name, often MIRAGE-RAG
+cd <repo-directory>   # checkout directory name, often MIRAGE-CARMA
 
 python -m venv .venv
 # Windows PowerShell:
