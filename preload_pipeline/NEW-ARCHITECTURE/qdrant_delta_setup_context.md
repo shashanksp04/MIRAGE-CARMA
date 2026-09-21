@@ -11,7 +11,7 @@ This document captures the working setup verified on NCSA Delta for:
 - Creating a Qdrant snapshot.
 - Downloading the snapshot as a portable artifact.
 - Restoring/reusing that snapshot later.
-- Using the restored collection from the main MetaMIRAGE pipeline.
+- Using the restored collection from the main MIRAGE-CARMA pipeline.
 
 Current working directory used during testing:
 
@@ -58,7 +58,7 @@ Because both run on the same allocated node, the notebook can communicate with Q
 http://127.0.0.1:6333
 ```
 
-Qdrant is treated as a service. The notebook and later the MetaMIRAGE runtime are simply clients of that service.
+Qdrant is treated as a service. The notebook and later the MIRAGE-CARMA runtime are simply clients of that service.
 
 ---
 
@@ -641,7 +641,7 @@ client = QdrantClient(
 COLLECTION_NAME = "mirage_test"
 ```
 
-The MetaMIRAGE pipeline can then query that collection normally.
+The MIRAGE-CARMA pipeline can then query that collection normally.
 
 Conceptually:
 
@@ -708,7 +708,7 @@ The snapshot therefore makes the prepared collection portable across Delta compu
 
 ---
 
-# 19. Intended MetaMIRAGE Database Lifecycle
+# 19. Intended MIRAGE-CARMA Database Lifecycle
 
 For the final system, the intended pattern is:
 
@@ -876,4 +876,4 @@ The following operations have been tested successfully on NCSA Delta:
 - Restoring the collection from the snapshot.
 - Querying/counting the restored collection successfully.
 
-This establishes the core infrastructure required for the redesigned MetaMIRAGE preload pipeline.
+This establishes the core infrastructure required for the redesigned MIRAGE-CARMA preload pipeline.

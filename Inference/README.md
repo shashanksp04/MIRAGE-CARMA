@@ -6,23 +6,34 @@ Input-image combining is an independent run-level option and is not controlled b
 
 ## Runtime architecture
 
-`generate.py` uses a staged inference pipeline:
+`generate.py` uses a staged inference pipeline. In the standard four-GPU configuration, GPUs 0–2 are dedicated to RAG and GPU 3 is dedicated to final benchmark generation:
 
 ```text
 Input dataset
     ↓
 Shared bounded RAG request queue
     ↓
-One RAG worker per detected GPU/model endpoint
+Three RAG workers on GPUs 0–2
     ↓
 RAG response queue
     ↓
-Independent multiprocessing generation pool
+Single-concurrency generation worker on GPU 3
     ↓
 Incremental JSONL output
 ```
 
-RAG workers use OpenAI-compatible endpoints beginning at port `11434` (`11435`, `11436`, and so on). Generation parallelism is controlled independently with `--num_processes`. RAG soft failures fall back to generation with the effective query, while hard failures are retried and skipped after the retry limit.
+The default endpoint mapping is `11434`–`11436` for RAG and `11437` for generation. Configure it with `--rag_gpu_count`, `--generation_gpu_count`, and `--rag_timeout_seconds`. Final generation concurrency is intentionally one request at a time so RAG and generation workloads do not compete for GPU memory or scheduling capacity. `--num_processes` is retained for CLI compatibility; generation uses controlled concurrency.
+
+RAG outcomes are mutually exclusive:
+
+- `success`: structured evidence passed retrieval/confidence requirements.
+- `insufficient_evidence`: RAG completed, but reliable evidence was not found; generation falls back to the effective query.
+- `invalid_output`: orchestration completed without valid structured retrieval state; generation falls back to the effective query.
+- `hard_fail_timeout`, `hard_fail_connection`, `hard_fail_model_service`, or `hard_fail_worker`: infrastructure failure; the pipeline retries at the RAG layer and skips generation after the retry limit.
+
+The final agent message is diagnostic only. Downstream generation receives the actual retrieved evidence recorded in structured RAG state, not a paraphrase of the agent response.
+
+Query enrichment remains enabled by default and runs before RAG. It does not replace retrieval or change the structured outcome rules.
 
 ## Qdrant collections
 

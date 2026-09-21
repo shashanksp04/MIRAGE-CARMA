@@ -6,7 +6,7 @@ AgMMU and MIRAGE both connect agricultural images with domain knowledge, but the
 
 Agricultural multimodal RAG has also been studied directly. Liu et al. combine a trained lightweight multimodal prompt-generation model, a fruit-tree knowledge base and RAG, and complexity-based routing among language models of different scales [@liu2026agriqa]. Their focus is a domain-optimized model and resource-allocation policy for fruit-tree diagnosis. The present work is instead designed to evaluate a general multimodal answer model on MIRAGE while varying how a separate text-evidence stage selects and acquires agricultural passages; it does not train a new vision encoder.
 
-We provisionally refer to the proposed system as *MetaMIRAGE++* [DETAIL REQUIRES VERIFICATION: final system name]. It is distinct from both the agricultural MIRAGE benchmark [@dongre2025mirage] and the e-commerce system named MIRAGE introduced by Sahay et al. [@sahay2026ecommercemirage]. We therefore use *MIRAGE* alone only for the agricultural benchmark.
+We provisionally refer to the proposed system as *MIRAGE-CARMA* [DETAIL REQUIRES VERIFICATION: final system name]. It is distinct from both the agricultural MIRAGE benchmark [@dongre2025mirage] and the e-commerce system named MIRAGE introduced by Sahay et al. [@sahay2026ecommercemirage]. We therefore use *MIRAGE* alone only for the agricultural benchmark.
 
 ## Multimodal Language Models and Knowledge-Intensive VQA
 

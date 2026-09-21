@@ -1,4 +1,4 @@
-# MetaMIRAGE — Concurrent Preload Pipeline Architecture
+# MIRAGE-CARMA — Concurrent Preload Pipeline Architecture
 
 **Status:** Finalized design
 **Purpose:** Replace the current sequential, one-state-at-a-time preload execution model with a concurrency-safe multi-state architecture that can use multiple independent 1-GPU Jupyter notebook allocations while preserving deterministic persistence, global deduplication, resumability, cumulative Qdrant state, crop-occurrence state, and reproducible snapshots.
@@ -7,7 +7,7 @@
 
 ## 1. Motivation
 
-The current MetaMIRAGE preload notebook is designed around a sequential cumulative workflow:
+The current MIRAGE-CARMA preload notebook is designed around a sequential cumulative workflow:
 
 ```text
 State 1
@@ -2426,7 +2426,7 @@ The key architectural shift is:
 
 > **Concurrency is state-level, persistence is state-local, coordination is centralized, vector storage is shared, and checkpointing is wave-level.**
 
-This preserves the strengths of the current deterministic cumulative preload architecture while allowing independent 1-GPU Jupyter notebooks on separate nodes to safely build the same curated MetaMIRAGE Qdrant database in parallel.
+This preserves the strengths of the current deterministic cumulative preload architecture while allowing independent 1-GPU Jupyter notebooks on separate nodes to safely build the same curated MIRAGE-CARMA Qdrant database in parallel.
 
 ---
 

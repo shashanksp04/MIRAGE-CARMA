@@ -18,7 +18,7 @@ Revise this paragraph to describe the **planned experimental design** unless com
 
 ### 2. Resolve or mark the system name
 
-“MetaMIRAGE++” is used as an established system name throughout the section and contribution list, but the name does not appear in the implementation and awaits project-owner approval (`notes/unresolved_questions.md`, question 13). Confirm the name before finalization. Until then, either attach `[DETAIL REQUIRES VERIFICATION]` to its first occurrence or use a neutral description such as “the proposed system.”
+“MIRAGE-CARMA” is used as an established system name throughout the section and contribution list, but the name does not appear in the implementation and awaits project-owner approval (`notes/unresolved_questions.md`, question 13). Confirm the name before finalization. Until then, either attach `[DETAIL REQUIRES VERIFICATION]` to its first occurrence or use a neutral description such as “the proposed system.”
 
 ### 3. Reframe the contribution claims around what is both supported and plausibly novel
 

@@ -30,6 +30,9 @@ OPENAI_API_BASE="http://127.0.0.1:11434/v1"
 QDRANT_URL="http://127.0.0.1:6333"
 
 NUM_PROCESSES=8
+RAG_GPU_COUNT=3
+GENERATION_GPU_COUNT=1
+RAG_TIMEOUT_SECONDS=600
 
 EMBED_MODEL_NAME="BAAI/bge-base-en-v1.5"
 TEST_MODEL="meta-llama/Llama-3.2-11B-Vision-Instruct"
@@ -73,6 +76,9 @@ python generate.py \
     --model_name "$MODEL_NAME" \
     --openai_api_base "$OPENAI_API_BASE" \
     --num_processes "$NUM_PROCESSES" \
+    --rag_gpu_count "$RAG_GPU_COUNT" \
+    --generation_gpu_count "$GENERATION_GPU_COUNT" \
+    --rag_timeout_seconds "$RAG_TIMEOUT_SECONDS" \
     --embed_model_name "$EMBED_MODEL_NAME" \
     --test_model "$TEST_MODEL" \
     --device "$DEVICE" \

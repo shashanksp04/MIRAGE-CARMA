@@ -1,4 +1,4 @@
-# MIRAGE-RAG — End-to-end pipeline guide
+# MIRAGE-CARMA: Context-Adaptive Retrieval with Metadata Awareness for Multimodal Reasoning — End-to-end pipeline guide
 
 This document describes the current Qdrant-backed runtime, batch inference, and evaluation workflows.
 
@@ -8,7 +8,7 @@ This document describes the current Qdrant-backed runtime, batch inference, and 
 
 ### 1.1 What this system does
 
-MIRAGE-RAG is built around a **retrieval-augmented** workflow backed by a **Qdrant** vector store in **server mode**. Documents are chunked, embedded in-process, and stored in Qdrant with metadata (including location and hardiness zone where applicable). RAG workers connect to the Qdrant server over HTTP—they do not open local database files directly. At query time, an LLM-driven **RAG agent** retrieves evidence, evaluates confidence, and may search the web and ingest new pages when confidence is low.
+MIRAGE-CARMA is built around a **retrieval-augmented** workflow backed by a **Qdrant** vector store in **server mode**. Documents are chunked, embedded in-process, and stored in Qdrant with metadata (including location and hardiness zone where applicable). RAG workers connect to the Qdrant server over HTTP—they do not open local database files directly. At query time, an LLM-driven **RAG agent** retrieves evidence, evaluates confidence, and may search the web and ingest new pages when confidence is low.
 
 **Batch inference** (`Inference/generate.py`) runs many items through that RAG stack and then a separate **generation** step, using a multi-process, GPU-aware layout so RAG load is controlled and scalable.
 
@@ -70,7 +70,7 @@ flowchart TB
 | Path                | Role                                                                                                                                                                                                                                                         |
 | ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | `rag_agent/`        | Qdrant client (`QdrantStore`), embeddings, chunking utilities, tools (retrieve, confidence, web search, web/PDF ingestion, keywords), and `MainAgent` (Google ADK `LlmAgent` + `InMemoryRunner`). |
-| `Inference/`        | `generate.py`: dataset → RAG queue → per-GPU workers → generation pool → JSONL output. Optional crop **query enrichment** before RAG.                                                                                                                        |
+| `Inference/`        | `generate.py`: dataset → enriched query → dedicated RAG GPU pool → structured RAG state → dedicated generation GPU → JSONL output. Optional crop **query enrichment** remains before RAG. |
 | `Evaluation/`       | LLM-as-a-judge scoring for identification and management benchmarks, plus score summaries.                                                                                                  |
 | `chat_models/`      | Clients used by generation (and related chat flows).                                                                                                                                                                                                         |
 | `Datasets/`         | Reference data (e.g. land-grant universities for URL-derived location).                                                                                                                                                                                      |
@@ -218,7 +218,7 @@ If the query supplies no usable `title`/`month_year`/derived `hardiness_zone`, s
 
 Implementation reference: `rag_agent/utils/ContentUtils.py` — `retrieve_with_priority_filters`.
 
-**Concept.** *Priority retrieval* means: for one user query, run **one Qdrant search per candidate strategy** (each with the same query embedding and `limit=k`, default 5). Every strategy that returns at least **`min_results`** hits (default 1) is **valid**. Among valid strategies, the implementation picks the one with the **highest normalized similarity score** (not the first in the list). So a broader filter can win if its top-k hits are semantically stronger than a stricter filter’s hits.
+**Concept.** *Priority retrieval* means: for one user query, compute one query embedding and reuse it for **one Qdrant search per candidate strategy** (each with `limit=k`, default 5). A strategy is valid only when at least **`min_results=2` semantically relevant chunks** meet the raw cosine threshold `0.65`. Among valid strategies, the implementation picks the one with the highest normalized strategy score (not the first in the list). A hard semantic floor of `0.60` prevents weak nearest neighbors from being treated as evidence.
 
 **Per-hit similarity.** Qdrant returns a cosine **score** where higher is better. The retrieval pipeline uses that raw score directly as `similarity`; no Chroma-compatible distance conversion is performed:
 
@@ -226,7 +226,7 @@ Implementation reference: `rag_agent/utils/ContentUtils.py` — `retrieve_with_p
 s_i = qdrant_score_i
 ```
 
-**Strategy score (normalized score for one candidate).** Let `n` be the number of documents returned for that query (up to `k`). The strategy’s aggregate score is the **mean** of the transformed per-hit similarities:
+**Strategy score (normalized score for one candidate).** Let `n` be the number of semantically relevant documents returned for that query (up to `k`). The strategy’s aggregate score is the **mean** of the transformed per-hit similarities. The transformation is used only for strategy comparison; confidence uses raw cosine similarity:
 
 ```text
 normalized_score = (1 / n) * Σ [1 / (2 - s_i)]   for i = 1..n     (or 0 if n = 0)
@@ -250,12 +250,12 @@ The `title` strategy wins because `0.827 > 0.766`. Since these are Qdrant cosine
 
 The current transformed strategy score selects **B**, while raw mean scoring would select **A**. This is why the current system keeps raw Qdrant scores as the canonical values but applies the nonlinear transformation for progressive strategy selection; researching alternative aggregation methods remains a separate follow-up.
 
-`normalized_score` is the arithmetic mean of the transformed raw Qdrant cosine similarities. The mean-scoring method is intentionally unchanged; the nonlinear transformation is applied only for progressive strategy selection. Raw similarities remain available for returned hits and confidence evaluation.
+`normalized_score` is the arithmetic mean of the transformed raw Qdrant cosine similarities among relevant chunks. Raw similarities remain canonical for relevance gating, returned evidence, and confidence evaluation.
 
 **Winner selection.**
 
 1. Evaluate **all** candidates in `filter_attempts` (including `semantic_only`).
-2. **Valid** strategies are those with `doc_count >= min_results`.
+2. **Valid** strategies are those with at least `min_results` chunks whose raw similarity is at least `RELEVANT_CHUNK_THRESHOLD`.
 3. If any valid strategy exists, choose
   `best_strategy = argmax normalized_score`  
    over valid strategies, breaking ties by Python’s `max` ordering on the list (deterministic given fixed evaluation order).
@@ -267,7 +267,7 @@ The current transformed strategy score selects **B**, while raw mean scoring wou
 | Parameter     | Role                                                                                      |
 | ------------- | ----------------------------------------------------------------------------------------- |
 | `k`           | Top-k hits per strategy (`limit` in Qdrant / `k` in code).                                          |
-| `min_results` | Minimum `doc_count` for a strategy to participate in the max-score selection (default 1). |
+| `min_results` | Minimum semantically relevant chunk count for a strategy to participate in selection (default 2). |
 
 
 **Why this design.** Stricter metadata filters shrink the corpus; if that subset has weak embedding matches, a **looser** filter (or `semantic_only`) can still win on **average similarity**, keeping retrieval grounded in vector relevance while using metadata when it helps.
@@ -302,27 +302,27 @@ Follow-up research should compare this transformed mean with raw mean scoring an
 
 #### 2.3.6 Confidence scoring and metadata “scope”
 
-`ConfidenceEvaluator.evaluate_retrieval_confidence` calls the same `**retrieve_with_priority_filters`** path, then combines four factors:
+`ConfidenceEvaluator.evaluate_retrieval_confidence` evaluates the existing structured retrieval result; it performs no embedding, Qdrant call, model call, or duplicate retrieval. It combines four factors:
 
 | Factor | What it measures | Weight |
 | ------ | ---------------- | -----: |
-| **Similarity** (`similarity_score`) | Mean raw Qdrant cosine similarity of the final retrieved chunks; higher is better. | 0.50 |
-| **Coverage** (`coverage_score`) | Number of retrieved chunks, capped at 5: `min(num_chunks / 5, 1.0)`. This is evidence quantity, not aspect diversity. | 0.20 |
-| **Consistency** (`consistency_score`) | Agreement of the chunks’ similarity scores, computed as `max(0, 1 - 5 * population_variance)`. With one chunk, the score defaults to 0.7. | 0.20 |
-| **Retrieval scope** (`scope_score`) | Specificity of the selected metadata strategy. More constrained strategies receive higher scores. | 0.10 |
+| **Similarity** (`similarity_score`) | Mean raw Qdrant cosine similarity of semantically relevant chunks only; higher is better. | 0.70 |
+| **Coverage** (`coverage_score`) | Relevant chunk count divided by `K=5`, capped at 1.0. | 0.15 |
+| **Consistency** (`consistency_score`) | Relevant similarity consistency scaled by semantic quality: `similarity_score * max(0, 1 - 5 * population_variance)`. | 0.10 |
+| **Retrieval scope** (`scope_score`) | Specificity of the selected metadata strategy. More constrained strategies receive higher scores. | 0.05 |
 
 The final score is:
 
 ```text
-confidence_score = 0.50 * similarity_score
-                 + 0.20 * coverage_score
-                 + 0.20 * consistency_score
-                 + 0.10 * scope_score
+confidence_score = 0.70 * similarity_score
+                 + 0.15 * coverage_score
+                 + 0.10 * consistency_score
+                 + 0.05 * scope_score
 ```
 
-The confidence levels are **high** for scores `>= 0.75`, **medium** for scores `>= 0.50`, and **low** otherwise. Scope weights are: `hardiness_zone+month_year+title` = 1.0, `hardiness_zone+month_year` = 0.9, `hardiness_zone+title` = 0.85, `hardiness_zone` = 0.8, `month_year` = 0.75, `title` = 0.7, and `semantic_only` = 0.4. See `scope_weights` in `rag_agent/tools/confidence_evaluator.py` for the source mapping.
+The confidence levels are **high** for scores `>= 0.78`, **medium** for scores `>= 0.60`, and **low** otherwise. The hard semantic gate is `0.60`; relevant chunks require raw cosine similarity `>= 0.65`. Scope weights are: `hardiness_zone+month_year+title` = 1.0, `hardiness_zone+month_year` = 0.9, `hardiness_zone+title` = 0.85, `hardiness_zone` = 0.8, `month_year` = 0.75, `title` = 0.7, and `semantic_only` = 0.4.
 
-Thus, the proposed labels are mostly right, with two corrections: **coverage is result-count coverage rather than aspect diversity**, and **consistency is score consistency rather than explicit agreement across source collections**. Better metadata alignment (zone + month + title) influences priority retrieval and tends to raise confidence, reducing unnecessary web search.
+Metadata remains a filtering signal, not a substitute for semantic relevance. Coverage counts relevant chunks only, and consistency cannot independently rescue weak evidence. Better metadata alignment can improve scope, but semantically unrelated chunks still fail the relevance gates.
 
 #### 2.3.7 Web search and metadata (`WebSearch`)
 
@@ -361,7 +361,7 @@ Runtime content is run-scoped. A later query in the same run can retrieve conten
 Run from `Inference/` after starting Qdrant and the OpenAI-compatible model server:
 
 ```bash
-cd /path/to/MIRAGE-RAG/Inference
+cd /path/to/MIRAGE-CARMA/Inference
 
 python generate.py \
   --input_file ../Datasets/standard/standard_benchmark.json \
@@ -369,6 +369,9 @@ python generate.py \
   --model_name meta-llama/Llama-3.2-11B-Vision-Instruct \
   --openai_api_base http://127.0.0.1:11434/v1 \
   --num_processes 8 \
+  --rag_gpu_count 3 \
+  --generation_gpu_count 1 \
+  --rag_timeout_seconds 600 \
   --embed_model_name BAAI/bge-base-en-v1.5 \
   --test_model meta-llama/Llama-3.2-11B-Vision-Instruct \
   --device None \
@@ -388,7 +391,7 @@ INPUT_FILE="../Datasets/${BENCH_TYPE}/${BENCH_TYPE}_benchmark.json"
 Use an exact key from `rag_agent/ablation_configs.json` for `--ablation_id`. The wrapper command is:
 
 ```bash
-cd /path/to/MIRAGE-RAG/Inference
+cd /path/to/MIRAGE-CARMA/Inference
 bash bash_generate.sh
 ```
 
@@ -405,20 +408,34 @@ Batch inference and the RAG agent expect an **OpenAI-compatible** HTTP API (for 
 CUDA device indices start at **0**. To dedicate **GPU 0** to the server on port 11434:
 
 ```bash
-CUDA_VISIBLE_DEVICES=0 python -m sglang.launch_server \
-  --model-path meta-llama/Llama-3.2-11B-Vision-Instruct \
+CUDA_VISIBLE_DEVICES=0 python -u -m sglang.launch_server \
+  --model-path Qwen/Qwen3-VL-2B-Instruct \
   --host 127.0.0.1 \
   --port 11434 \
   --tensor-parallel-size 1 \
-  --tool-call-parser llama3 \
+  --tool-call-parser qwen \
   --enable-multimodal \
   --trust-remote-code \
-  --mem-fraction-static 0.9 \
-  --max-total-tokens 32768 \
-  --attention-backend flashinfer
+  --mem-fraction-static 0.70 \
+  --context-length 65536
 ```
 
 Use `CUDA_VISIBLE_DEVICES=1`, port **11435**, and so on, for additional GPUs to match `generate.py`’s endpoint list.
+
+The server options above have these roles:
+
+- `CUDA_VISIBLE_DEVICES=0` makes GPU 0 visible to this process. Change the index when assigning a different GPU.
+- `python -u` runs Python in unbuffered mode, so startup and runtime logs appear immediately.
+- `-m sglang.launch_server` starts SGLang’s OpenAI-compatible server module.
+- `--model-path Qwen/Qwen3-VL-2B-Instruct` selects the Qwen3-VL 2B Instruct checkpoint.
+- `--host 127.0.0.1` binds the API to the local machine; `--port 11434` serves it at that port.
+- `--tensor-parallel-size 1` uses one tensor-parallel worker, matching the single visible GPU.
+- `--tool-call-parser qwen` enables SGLang’s Qwen tool-call format parser, so generated tool calls are decoded correctly.
+- `--enable-multimodal` enables image inputs for the vision-language model.
+- `--trust-remote-code` permits model-specific code shipped with the checkpoint to load.
+- `--mem-fraction-static 0.70` allows SGLang to reserve up to 70% of the GPU memory for static model/runtime allocations, leaving roughly 30% for other runtime needs or processes. The exact free memory depends on CUDA, the driver, and other allocations.
+- `--context-length 65536` sets the maximum prompt-plus-generation context window to 65,536 tokens.
+
 
 #### vLLM (vision-language / tool-calling example)
 
@@ -537,7 +554,7 @@ You should receive JSON (possibly an empty `collections` list on first start).
 
 ```bash
 export QDRANT_URL=http://127.0.0.1:6333
-cd /path/to/MIRAGE-RAG   # repository root
+cd /path/to/MIRAGE-CARMA   # repository root
 python -c "from qdrant_client import QdrantClient; c=QdrantClient(url='http://127.0.0.1:6333'); print(c.get_collections())"
 ```
 
@@ -567,11 +584,15 @@ The runtime collection is the only collection inference may mutate. It is shared
 The full data path is:
 
 ```text
-Dataset → bounded RAG request queue → per-GPU RAG workers
-        → RAG response queue → generation pool → JSONL output
+Dataset → query enrichment → bounded RAG request queue
+        → RAG workers on GPUs 0–2 → structured RAG result
+        → generation queue → single generation worker on GPU 3
+        → JSONL output
 ```
 
-Soft RAG failures continue to generation with the effective query. Hard failures are retried; after the retry limit, generation is skipped for that item and the failure is recorded.
+RAG infrastructure failures are retried explicitly at the pipeline layer; SDK/client retries are disabled to avoid nested retry multiplication. After the retry limit, generation is skipped and the terminal hard-failure status is recorded. `insufficient_evidence` and `invalid_output` are completed RAG outcomes and fall back to generation with the effective query; they are not hard failures.
+
+The application owns structured retrieval state while the agent retains control over tool use. The state records retrieved evidence, strategy, raw similarities, confidence, web-search activity, ingestion counts, and the final RAG status. The agent's final natural-language message is diagnostic and cannot erase valid retrieved evidence.
 
 ---
 
@@ -582,7 +603,7 @@ Run evaluation from `Evaluation/` after inference outputs have been split into i
 Configure `BENCH_TYPES`, `JUDGE_NAME`, `SUBJECT_NAME`, `OPENAI_API_BASE`, and `NUM_PROCESSES` in `Evaluation/bash_LLMsAsJudges.sh`, then run:
 
 ```bash
-cd /path/to/MIRAGE-RAG/Evaluation
+cd /path/to/MIRAGE-CARMA/Evaluation
 bash bash_LLMsAsJudges.sh
 ```
 
@@ -746,11 +767,11 @@ the full contract and `run.md` for operations.
 
 ### 8.4 Submitting jobs on an HPC cluster (example: Delta)
 
-For scheduled GPU work, **run login and submission steps from your usual shell** (project workflows often use the repo root or a checkout named `MetaMirage` on the cluster). Example flow from internal notes:
+For scheduled GPU work, **run login and submission steps from your usual shell** (project workflows often use the repo root or a checkout named `MIRAGE-CARMA` on the cluster). Example flow from internal notes:
 
 1. SSH into the login node (example): `ssh <user>@login.delta.ncsa.illinois.edu` (authenticate per site policy, e.g. Duo).
 2. Activate your Python or module environment.
-3. Create a Slurm job script under your project’s job directory (e.g. `MetaMirage/job_scripts`).
+3. Create a Slurm job script under your project’s job directory (e.g. `MIRAGE-CARMA/job_scripts`).
 4. Submit: `sbatch job_request.slurm` — note the printed job id (e.g. `Submitted batch job 123456`).
 5. Monitor: `squeue -u $USER`.
 
@@ -798,7 +819,7 @@ python --version
 python3 -m venv mirage
 source mirage/bin/activate
 pip install --upgrade pip wheel setuptools
-cd /path/to/MIRAGE-RAG    # MIRAGE-RAG repository root — adjust checkout path
+cd /path/to/MIRAGE-CARMA    # MIRAGE-CARMA repository root — adjust checkout path
 pip install -r requirements.txt
 python -c "import torch; import importlib.metadata as m; print('torch', torch.__version__, '| SGLang', m.version('sglang'), '| vLLM', m.version('vllm'))"
 ```
@@ -812,16 +833,16 @@ Repo-root **`requirements.txt`** is the **only** pinned dependency manifest for 
 Then start an OpenAI-compatible **SGLang** server on the port your batch job expects (same invocation as **§3.1**; `Inference/generate.py` defaults map GPU **i** to port **11434 + i** unless you override `--openai_api_base`):
 
 ```bash
-CUDA_VISIBLE_DEVICES=0 python -m sglang.launch_server \
-  --model-path meta-llama/Llama-3.2-11B-Vision-Instruct \
+CUDA_VISIBLE_DEVICES=0 python -u -m sglang.launch_server \
+  --model-path Qwen/Qwen3-VL-2B-Instruct \
   --host 127.0.0.1 \
   --port 11434 \
   --tensor-parallel-size 1 \
-  --tool-call-parser llama3 \
+  --tool-call-parser qwen \
   --enable-multimodal \
   --trust-remote-code \
-  --mem-fraction-static 0.9 \
-  --max-total-tokens 32768
+  --mem-fraction-static 0.70 \
+  --context-length 65536
 ```
 
 Use `CUDA_VISIBLE_DEVICES=1`, port **11435**, and so on, for additional GPUs to match `generate.py`'s endpoint list.

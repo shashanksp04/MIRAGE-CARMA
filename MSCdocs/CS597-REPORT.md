@@ -1,13 +1,21 @@
-# Semester Report — MetaMIRAGE RAG System Development
+# Semester Report — MIRAGE-CARMA RAG System Development
 
 > **Status note:** This report preserves the implementation state and terminology
 > from the semester in which it was written. The current repository uses Qdrant
 > for runtime and preload vector storage; the current concurrent preload design
 > is documented in `preload_pipeline/NEW-ARCHITECTURE/`.
+>
+> **Current runtime update:** The batch inference implementation now separates
+> three RAG GPU endpoints (`11434`–`11436`) from one final-generation endpoint
+> (`11437`) in the standard four-GPU setup. RAG outcomes use explicit structured
+> statuses rather than a generic soft failure, retrieved evidence is authoritative
+> over agent final prose, and confidence evaluation consumes an existing retrieval
+> result without repeating retrieval or embedding. Query enrichment remains part of
+> the runtime path.
 
 ## 1. Overview
 
-This semester, I designed and implemented an end-to-end **retrieval-augmented generation (RAG) system** tailored for domain-specific reasoning, particularly in agriculture. The system, referred to as **MetaMIRAGE**, integrates structured metadata, adaptive retrieval strategies, and dynamic knowledge ingestion to improve the reliability and contextual grounding of model outputs.
+This semester, I designed and implemented an end-to-end **retrieval-augmented generation (RAG) system** tailored for domain-specific reasoning, particularly in agriculture. The system, referred to as **MIRAGE-CARMA**, integrates structured metadata, adaptive retrieval strategies, and dynamic knowledge ingestion to improve the reliability and contextual grounding of model outputs.
 
 The work spans four major components:
 
@@ -16,7 +24,7 @@ The work spans four major components:
 3. **Batch inference pipeline for scalable generation**
 4. **Dynamic ablation framework for controlled experimentation**
 
-![High-level overview of MetaMIRAGE RAG components and stages](./figures/overview.png)
+![High-level overview of MIRAGE-CARMA RAG components and stages](./figures/overview.png)
 
 *Figure 1 — System overview: offline ingestion, runtime RAG, inference, and experimentation.*
 
@@ -226,9 +234,11 @@ Implemented a scalable inference system:
 
 ### 8.3 Fault Handling
 
-* **Soft failures** → fallback to query-only generation
-* **Hard failures** → retry mechanism
-* Automatic **Chroma rebind** for stale handles
+* `success` → append structured retrieved evidence
+* `insufficient_evidence` or `invalid_output` → fall back to the effective query
+* Explicit hard-failure statuses → retry at the pipeline layer, then record and skip generation
+* No response-length heuristic determines retrieval validity
+* Current runtime uses server-managed Qdrant; historical Chroma rebind behavior is retained only as migration context
 
 ---
 

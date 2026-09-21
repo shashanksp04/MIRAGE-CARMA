@@ -1,10 +1,10 @@
-# MIRAGE-RAG Repository Analysis
+# MIRAGE-CARMA Repository Analysis
 
 **Assessment date:** 2026-08-27
 
 ## Executive Summary
 
-MIRAGE-RAG is an agricultural, multimodal retrieval-augmented generation system built around the MIRAGE benchmark. It combines:
+MIRAGE-CARMA is an agricultural, multimodal retrieval-augmented generation system built around the MIRAGE benchmark. It combines:
 
 - Offline and runtime document ingestion.
 - Sentence-transformer embeddings and metadata-rich chunks.
@@ -24,6 +24,10 @@ The preload/runtime architecture is now aligned on Qdrant:
 `Guide.md` is the most current architectural reference for runtime and preload behavior. The checked-in inference path now resolves a run-scoped runtime collection before starting workers and uses rank 0 as a readiness barrier rather than as a collection-reset owner.
 
 The current inference lifecycle is now base/runtime isolated: `mirage_base` is curated and read-only, while each ablation run uses a run-scoped `mirage_runtime_<ablation>_<timestamp>` collection for runtime web/PDF augmentation. The runtime collection is resumed after interruption or cleaned up after successful completion, so runtime ingestion does not contaminate the curated base or a separate run.
+
+The current batch runtime also isolates GPU workloads in the default four-GPU layout: three endpoints (`11434`–`11436`) serve RAG workers and one endpoint (`11437`) serves final benchmark generation with single-request concurrency. RAG responses are represented by structured state rather than inferred from final agent prose. Terminal RAG statuses are `success`, `insufficient_evidence`, `invalid_output`, `hard_fail_timeout`, `hard_fail_connection`, `hard_fail_model_service`, and `hard_fail_worker`.
+
+Retrieval computes one embedding per distinct request query and reuses it across the progressive metadata strategies and any post-ingestion retrieval. Confidence evaluation consumes the existing `RetrievalResult` and performs only deterministic scoring. Semantic eligibility uses raw Qdrant cosine scores: at least two of five candidates must reach `0.65`, and a top-result floor of `0.60` rejects obviously weak evidence. Query enrichment remains an optional preprocessing step and is preserved independently of these controls.
 
 ## 1. System Purpose and Design Goals
 
@@ -247,14 +251,14 @@ The tool wrappers log success and failure and expose structured dictionaries wit
 - Similarity consistency, based on variance.
 - Retrieval scope, based on the selected metadata strategy.
 
-The weighted score is:
+The current weighted score is:
 
-- Similarity: 50%.
-- Coverage: 20%.
-- Consistency: 20%.
-- Scope: 10%.
+- Similarity: 70%.
+- Relevant-evidence coverage: 15%.
+- Relevance-scaled consistency: 10%.
+- Scope: 5%.
 
-Scores at or above `0.75` are high confidence, scores from `0.50` to below `0.75` are medium confidence, and lower scores are low confidence.
+Scores at or above `0.78` are high confidence, scores from `0.60` to below `0.78` are medium confidence, and lower scores are low confidence. A strategy must have at least two chunks with raw cosine similarity `>= 0.65`; a strongest-match score below `0.60` immediately produces low confidence.
 
 This is a heuristic confidence model rather than a calibrated probability estimate. It is useful as a routing signal for experiments, but it should not be interpreted as a statistically validated confidence measure without additional calibration work.
 
@@ -287,10 +291,10 @@ The crop dictionary is therefore not a second vector database and does not repla
 flowchart LR
     Dataset[Input benchmark JSON] --> Driver[Inference driver]
     Driver --> RAGQueue[Bounded RAG request queue]
-    RAGQueue --> RAGWorkers[One RAG worker per GPU endpoint]
-    RAGWorkers --> RAGResponses[RAG response queue]
+    RAGQueue --> RAGWorkers[Three RAG workers on GPUs 0-2]
+    RAGWorkers --> RAGResponses[Structured RAG response queue]
     RAGResponses --> Decision{RAG outcome}
-    Decision -->|success or soft failure| GenerationPool[CPU generation pool]
+    Decision -->|success / insufficient / invalid| GenerationPool[GPU 3 generation worker]
     Decision -->|hard failure after retries| JSONL[JSONL output]
     GenerationPool --> JSONL
 ```
@@ -308,19 +312,22 @@ The main responsibilities include:
 - Sending the combined prompt and images to the generation client.
 - Writing incremental JSONL results.
 
-Before starting workers, the driver uses `InferenceDatabaseManager` to validate `mirage_base` when enabled and select the active runtime collection. It starts rank 0 first, waits for its `READY` status, then starts the remaining per-endpoint workers. All workers receive the same runtime collection name. The bounded request queue controls RAG backpressure; the response queue decouples RAG completion from the independent generation pool.
+Before starting workers, the driver uses `InferenceDatabaseManager` to validate `mirage_base` when enabled and select the active runtime collection. It starts rank 0 first, waits for its `READY` status, then starts the remaining RAG workers on the RAG endpoints. All workers receive the same runtime collection name. The generation endpoint is separate and uses one active final-generation request. The bounded request queue controls RAG backpressure; the response queue decouples RAG completion from generation.
 
 ### 8.1 Failure handling
 
-RAG failures are classified using text heuristics:
+RAG outcomes are structured and mutually exclusive:
 
-- Connection, timeout, HTTP 5xx, and exception-like failures are hard failures and can be retried.
-- Short answers and non-hard failures are soft failures; generation continues using the effective query without retrieved context.
-- A hard failure after retry is written without running generation.
+- `success` means usable evidence passed semantic relevance and confidence requirements.
+- `insufficient_evidence` means RAG completed correctly but did not find enough evidence; generation continues with the effective query.
+- `invalid_output` means orchestration completed without valid structured state; generation continues with the effective query and records the invalid state.
+- `hard_fail_timeout`, `hard_fail_connection`, `hard_fail_model_service`, and `hard_fail_worker` represent infrastructure failures. They are retried only by the pipeline layer; a terminal hard failure is written without generation.
+
+Response length and final-agent wording are not used to classify retrieval. The application records authoritative structured RAG state while the agent retains control over tool use.
 
 Generation has its own retry loop and writes `-1` plus an error field when all retries fail.
 
-This layered failure model is useful for long batch jobs because a weak retrieval response does not necessarily prevent answer generation. The main limitations are that classification depends on error-message text and there is no per-request timeout inside the RAG worker itself.
+Confidence evaluation is pure math over the existing retrieval result: it performs no second retrieval, embedding, or model call. The query embedding is reused across progressive filters and post-ingestion retrieval. The RAG worker applies an explicit timeout, and SDK retries are disabled so retries remain owned by the pipeline.
 
 ### 8.2 Collection lifecycle
 

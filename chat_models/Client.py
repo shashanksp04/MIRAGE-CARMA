@@ -7,13 +7,15 @@ def encode_image(image_path):
     return base64.b64encode(image_file.read()).decode('utf-8')
 
 class Client:
-    def __init__(self, model_name="Qwen2-VL-7B-Instruct", openai_api_key = "token-abc123", openai_api_base = "None", messages=[]):
+    def __init__(self, model_name="Qwen2-VL-7B-Instruct", openai_api_key="token-abc123", openai_api_base="None", messages=None, max_retries=0, timeout=None):
         self.client = OpenAI(
             api_key=openai_api_key,
             base_url=openai_api_base,
+            max_retries=max_retries,
+            timeout=timeout,
         )
         self.model_name = model_name
-        self.messages = messages
+        self.messages = list(messages or [])
         self.history = []
     
     def chat(self, prompt, images=[], response_format=None):

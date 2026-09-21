@@ -19,6 +19,15 @@ from tqdm import tqdm
 from urllib.parse import urlparse
 from PIL import Image, ImageOps, ImageDraw, ImageFont
 import re
+from rag_agent.utils.rag_state import (
+    RAG_CONNECTION_ERROR,
+    RAG_INSUFFICIENT_EVIDENCE,
+    RAG_INVALID_OUTPUT,
+    RAG_MODEL_SERVICE_ERROR,
+    RAG_SUCCESS,
+    RAG_TIMEOUT,
+    RAG_WORKER_ERROR,
+)
 
 
 # ============================================================
@@ -48,6 +57,17 @@ def _build_endpoints(openai_api_base, num_gpus):
 
     start_port = 11434
     return [f"{scheme}://{host}:{start_port + i}/v1" for i in range(num_gpus)]
+
+
+def _split_endpoints(openai_api_base, num_gpus, rag_gpu_count=3, generation_gpu_count=1):
+    endpoints = _build_endpoints(openai_api_base, num_gpus)
+    required = rag_gpu_count + generation_gpu_count
+    if len(endpoints) < required:
+        raise RuntimeError(
+            f"GPU workload isolation requires {required} endpoints, but only "
+            f"{len(endpoints)} were detected."
+        )
+    return endpoints[:rag_gpu_count], endpoints[rag_gpu_count:required]
 
 
 # ============================================================
@@ -120,37 +140,15 @@ def build_panel_hint(n):
 # RAG FAILURE CLASSIFICATION
 # ============================================================
 
-def _is_hard_rag_failure(err):
-    if not err:
-        return False
-    e = err.lower()
-    keywords = [
-        "timeout",
-        "connection",
-        "refused",
-        "unreachable",
-        "502",
-        "503",
-        "504",
-        "exception",
-        "traceback",
-    ]
-    return any(k in e for k in keywords)
-
-
-def _is_soft_rag_failure(answer, error):
-    if error and not _is_hard_rag_failure(error):
-        return True
-    if answer is None:
-        return True
-    # Some model/server combinations emit tool-call syntax as ordinary text
-    # instead of returning a structured function call. Never pass that protocol
-    # text downstream as if it were retrieved evidence.
-    if re.search(r"<\s*/?\s*tool_call\b", answer, flags=re.IGNORECASE):
-        return True
-    if len(answer.strip()) < 30:
-        return True
-    return False
+def _classify_rag_exception(error):
+    text = str(error or "").lower()
+    if "timeout" in text or "timed out" in text:
+        return RAG_TIMEOUT
+    if any(token in text for token in ("connection", "refused", "unreachable")):
+        return RAG_CONNECTION_ERROR
+    if any(token in text for token in ("worker", "process died")):
+        return RAG_WORKER_ERROR
+    return RAG_MODEL_SERVICE_ERROR
 
 
 # ============================================================
@@ -164,7 +162,7 @@ def generation_worker(args):
         images,
         model_name,
         offline_model,
-        openai_api_base,
+        generation_endpoint,
         max_retries,
         retry_delay,
     ) = args
@@ -179,7 +177,12 @@ def generation_worker(args):
             if model_name.startswith("gpt"):
                 client = OpenAI_Chat(model_name=model_name, messages=[])
             else:
-                client = Client(model_name=offline_model, openai_api_base=openai_api_base, messages=[])
+                client = Client(
+                    model_name=offline_model,
+                    openai_api_base=generation_endpoint,
+                    messages=[],
+                    max_retries=0,
+                )
 
             response = client.chat(prompt=enhanced_query, images=images)
             item[model_name] = response
@@ -219,6 +222,7 @@ def rag_worker_process(
     base_collection: str,
     use_base_collection: bool,
     runtime_collection: str,
+    rag_timeout_seconds: int,
 ):
     import asyncio
     from rag_agent.main import MainAgent
@@ -299,6 +303,7 @@ def rag_worker_process(
         request_count += 1
 
         rag_agent.current_location = location
+        rag_agent.begin_request()
         print(f"[RAG Worker] Item {item_id}: Received (Attempt {attempt})")
         print(f"[RAG Worker] Item {item_id}: Query length = {len(query)} chars")
 
@@ -330,15 +335,16 @@ def rag_worker_process(
         #         rag_response_q.put((item_id, None, str(e), False, api_base, attempt, query))
         #         continue
 
-        effective_query = crop_enricher.enrich(query)
         try:
+            effective_query = crop_enricher.enrich(query)
             session_id = f"rag_session_{item_id}"
-            events = loop.run_until_complete(rag_runner.run_debug(effective_query, session_id=session_id))
+            events = loop.run_until_complete(asyncio.wait_for(
+                rag_runner.run_debug(effective_query, session_id=session_id),
+                timeout=rag_timeout_seconds,
+            ))
 
-            rag_answer = None
             tool_calls = []
             agent_texts = []
-            web_search_performed = False
 
             if isinstance(events, list):
                 print(f"[RAG Worker] Item {item_id}: {len(events)} events returned")
@@ -363,25 +369,53 @@ def rag_worker_process(
                                 if hasattr(part, "text") and part.text:
                                     agent_texts.append(part.text)
 
-                web_search_performed = any("web_search" in t.lower() for t in tool_calls)
+            agent_message = agent_texts[-1].strip() if agent_texts else None
+            rag_result = rag_agent.finalize_rag_result(agent_message=agent_message)
+            print(
+                f"[RAG Worker] Item {item_id}: status={rag_result.status} "
+                f"evidence={len(rag_result.evidence)} confidence={rag_result.confidence}"
+            )
+            rag_response_q.put({
+                "item_id": item_id,
+                "status": rag_result.status,
+                "rag_result": rag_result.to_dict(),
+                "error": rag_result.error,
+                "endpoint": api_base,
+                "attempt": attempt,
+                "effective_query": effective_query,
+            })
 
-                if agent_texts:
-                    rag_answer = agent_texts[-1].strip()
-
-            if rag_answer:
-                print(f"[RAG Worker] Item {item_id}: ✓ Extracted answer ({len(rag_answer)} chars)")
-                rag_response_q.put(
-                    (item_id, rag_answer, None, web_search_performed, api_base, attempt, effective_query)
-                )
-            else:
-                print(f"[RAG Worker] Item {item_id}: ✗ No valid answer extracted")
-                rag_response_q.put(
-                    (item_id, None, "No RAG answer found in response", False, api_base, attempt, effective_query)
-                )
-
+        except asyncio.TimeoutError as e:
+            status = RAG_TIMEOUT
+            error = str(e) or "RAG request timed out"
+            print(f"[RAG Worker] Item {item_id}: ✗ Timeout during RAG: {error}")
+            rag_response_q.put({
+                "item_id": item_id, "status": status,
+                "rag_result": {"status": status, "error": error},
+                "error": error, "endpoint": api_base,
+                "attempt": attempt, "effective_query": effective_query,
+            })
+        except (ConnectionError, OSError) as e:
+            status = RAG_CONNECTION_ERROR
+            print(f"[RAG Worker] Item {item_id}: ✗ Connection failure during RAG: {e}")
+            rag_response_q.put({
+                "item_id": item_id, "status": status,
+                "rag_result": {"status": status, "error": str(e)},
+                "error": str(e), "endpoint": api_base,
+                "attempt": attempt, "effective_query": effective_query,
+            })
         except Exception as e:
             print(f"[RAG Worker] Item {item_id}: ✗ Exception during RAG: {e}")
-            rag_response_q.put((item_id, None, str(e), False, api_base, attempt, effective_query))
+            status = _classify_rag_exception(e)
+            rag_response_q.put({
+                "item_id": item_id,
+                "status": status,
+                "rag_result": {"status": status, "error": str(e)},
+                "error": str(e),
+                "endpoint": api_base,
+                "attempt": attempt,
+                "effective_query": effective_query,
+            })
 
 
 # ============================================================
@@ -445,7 +479,10 @@ class Generate:
                  use_base_collection: bool = True,
                  runtime_mode: str = "resume",
                  runtime_collection_override: Optional[str] = None,
-                 snapshot_runtime: bool = False):
+                 snapshot_runtime: bool = False,
+                 rag_gpu_count: int = 3,
+                 generation_gpu_count: int = 1,
+                 rag_timeout_seconds: int = 600):
 
         self.raw_data_file = raw_data_file
         self.output_file = output_file
@@ -472,6 +509,9 @@ class Generate:
         self.runtime_mode = runtime_mode
         self.runtime_collection_override = runtime_collection_override
         self.snapshot_runtime = snapshot_runtime
+        self.rag_gpu_count = int(rag_gpu_count)
+        self.generation_gpu_count = int(generation_gpu_count)
+        self.rag_timeout_seconds = int(rag_timeout_seconds)
         self.database_manager = None
 
         self.max_retries = 5
@@ -544,7 +584,18 @@ class Generate:
     def _generate_no_rag(self, items):
         """Baseline path: no RAG workers, no crop enrichment; prompt is `get_prompt` user string only."""
         ctx = multiprocessing.get_context("spawn")
-        pool = ctx.Pool(processes=self.num_processes)
+        num_gpus = _detect_num_gpus()
+        if num_gpus >= self.rag_gpu_count + self.generation_gpu_count:
+            _, generation_endpoints = _split_endpoints(
+                self.openai_api_base,
+                num_gpus,
+                rag_gpu_count=self.rag_gpu_count,
+                generation_gpu_count=self.generation_gpu_count,
+            )
+            generation_endpoint = generation_endpoints[0]
+        else:
+            generation_endpoint = _build_endpoints(self.openai_api_base, max(num_gpus, 1))[0]
+        pool = ctx.Pool(processes=1)
         total = len(items)
         pbar = tqdm(total=total)
 
@@ -576,7 +627,7 @@ class Generate:
                 args=((item, user_text, prompt["images"],
                        self.model_name,
                        self.offline_model,
-                       self.openai_api_base,
+                       generation_endpoint,
                        self.max_retries,
                        self.retry_delay),),
                 callback=generation_done,
@@ -643,8 +694,14 @@ class Generate:
 
         ctx = multiprocessing.get_context("spawn")
 
-        num_gpus = _detect_num_gpus() or 1
-        endpoints = _build_endpoints(self.openai_api_base, num_gpus)
+        num_gpus = _detect_num_gpus()
+        endpoints, generation_endpoints = _split_endpoints(
+            self.openai_api_base,
+            num_gpus,
+            rag_gpu_count=self.rag_gpu_count,
+            generation_gpu_count=self.generation_gpu_count,
+        )
+        generation_endpoint = generation_endpoints[0]
 
         rag_request_q = ctx.Queue(maxsize=num_gpus * self.rag_inflight_per_gpu)
         rag_response_q = ctx.Queue()
@@ -672,6 +729,7 @@ class Generate:
                 self.base_collection,
                 self.use_base_collection,
                 active_runtime_collection,
+                self.rag_timeout_seconds,
             ),
         )
         p0.start()
@@ -703,6 +761,7 @@ class Generate:
                     self.base_collection,
                     self.use_base_collection,
                     active_runtime_collection,
+                    self.rag_timeout_seconds,
                 ),
             )
             p.start()
@@ -727,7 +786,7 @@ class Generate:
         if dead:
             print(f"[MAIN] WARNING: Some RAG workers died at startup: {dead}")
 
-        pool = ctx.Pool(processes=self.num_processes)
+        pool = ctx.Pool(processes=1)
 
         pending = {}
         idx = 0
@@ -753,9 +812,7 @@ class Generate:
 
         while completed < total:
             try:
-                item_id, rag_answer, rag_error, web_flag, endpoint, attempt, effective_query = (
-                    rag_response_q.get(timeout=60)
-                )
+                response = rag_response_q.get(timeout=60)
             except Empty:
                 dead_workers = [
                     (ep, p.pid, p.exitcode)
@@ -773,39 +830,55 @@ class Generate:
                 print("[MAIN] Waiting for RAG responses... workers still alive.", flush=True)
                 continue
 
+            item_id = response["item_id"]
             if item_id not in pending:
                 continue
 
             item, prompt, attempts = pending[item_id]
+            status = response["status"]
+            rag_result = response.get("rag_result") or {}
+            rag_error = response.get("error")
+            endpoint = response.get("endpoint")
+            attempt = response.get("attempt", attempts)
+            effective_query = response.get("effective_query", prompt["user"])
             item["RAG_endpoint"] = endpoint
             item["RAG_attempt"] = attempt
-            item["RAG_web_search_performed"] = web_flag
+            item["RAG_status"] = status
+            item["RAG_used"] = status == RAG_SUCCESS
+            item["RAG_web_search_performed"] = bool(rag_result.get("web_search_performed", False))
+            item["RAG_web_content_ingested"] = rag_result.get("web_content_ingested", 0)
+            item["RAG_confidence"] = rag_result.get("confidence")
+            item["RAG_confidence_score"] = rag_result.get("confidence_score")
+            item["RAG_retrieval_state"] = rag_result.get("retrieval_state")
+            item["RAG_agent_message"] = rag_result.get("agent_message")
+            item["RAG_error"] = rag_error
 
-            if rag_error is None and rag_answer and not _is_soft_rag_failure(rag_answer, rag_error):
-                enhanced = effective_query + "\n\nadditional context: " + rag_answer
-                item["RAG_status"] = "successful"
-                item["RAG_used"] = True
-
-            else:
-                if _is_hard_rag_failure(rag_error) and attempts < self.max_rag_attempts:
-                    print(f"[MAIN] Item {item_id}: Retrying RAG...")
+            if status in {RAG_TIMEOUT, RAG_CONNECTION_ERROR, RAG_MODEL_SERVICE_ERROR, RAG_WORKER_ERROR}:
+                if attempts < self.max_rag_attempts:
+                    print(f"[MAIN] Item {item_id}: Retrying RAG after {status}...")
                     pending[item_id] = (item, prompt, attempts + 1)
                     rag_request_q.put((item_id, prompt["user"], prompt.get("location"), attempts + 1))
                     continue
+                print(f"[MAIN] Item {item_id}: {status} → skipping generation")
+                write(item)
+                pbar.update(1)
+                completed += 1
+                del pending[item_id]
+                continue
 
-                if _is_soft_rag_failure(rag_answer, rag_error):
-                    print(f"[MAIN] Item {item_id}: Soft fail → fallback to original query")
-                    enhanced = effective_query
-                    item["RAG_status"] = "soft_fail"
-                    item["RAG_used"] = False
-                else:
-                    print(f"[MAIN] Item {item_id}: Hard fail → skipping generation")
-                    item["RAG_status"] = "hard_fail"
-                    write(item)
-                    pbar.update(1)
-                    completed += 1
-                    del pending[item_id]
-                    continue
+            if status == RAG_SUCCESS:
+                evidence = rag_result.get("evidence") or []
+                context = "\n\n".join(
+                    str(chunk.get("text", "")).strip()
+                    for chunk in evidence
+                    if chunk.get("text")
+                )
+                enhanced = effective_query + "\n\nadditional context:\n\n" + context
+            else:
+                # Insufficient evidence and invalid structured output are valid
+                # completed RAG outcomes; benchmark generation falls back to the
+                # original (possibly enriched) query.
+                enhanced = effective_query
 
             del pending[item_id]
 
@@ -822,7 +895,7 @@ class Generate:
                 args=((item, enhanced, prompt["images"],
                        self.model_name,
                        self.offline_model,
-                       self.openai_api_base,
+                       generation_endpoint,
                        self.max_retries,
                        self.retry_delay),),
                 callback=generation_done,
@@ -859,6 +932,9 @@ if __name__ == "__main__":
     parser.add_argument("--model_name", default="gpt-4o")
     parser.add_argument("--openai_api_base", default="")
     parser.add_argument("--num_processes", type=int, default=os.cpu_count())
+    parser.add_argument("--rag_gpu_count", type=int, default=3)
+    parser.add_argument("--generation_gpu_count", type=int, default=1)
+    parser.add_argument("--rag_timeout_seconds", type=int, default=600)
     parser.add_argument("--embed_model_name", default="BAAI/bge-base-en-v1.5")
     parser.add_argument("--test_model", default="Qwen2.5-VL-3B-Instruct")
     parser.add_argument("--device", default="None")
@@ -932,6 +1008,9 @@ if __name__ == "__main__":
         runtime_mode=args.runtime_mode,
         runtime_collection_override=args.runtime_collection_override,
         snapshot_runtime=args.snapshot_runtime,
+        rag_gpu_count=args.rag_gpu_count,
+        generation_gpu_count=args.generation_gpu_count,
+        rag_timeout_seconds=args.rag_timeout_seconds,
     )
 
     generator.generate()

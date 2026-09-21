@@ -1,9 +1,16 @@
 from typing import Any, List, Dict, Optional, Tuple, TYPE_CHECKING
 import re
 import hashlib
+import statistics
 from transformers import AutoTokenizer
 from rag_agent.utils.metadata import extract_hardiness_zone_for_location
 from rag_agent.utils.qdrant_store import chroma_where_to_qdrant_filter
+from rag_agent.tools.confidence_evaluator import (
+    K,
+    MIN_RESULTS,
+    RELEVANT_CHUNK_THRESHOLD,
+)
+from rag_agent.utils.rag_state import RetrievalResult
 
 if TYPE_CHECKING:
     from rag_agent.utils.qdrant_store import QdrantStore
@@ -102,6 +109,23 @@ class ContentUtils:
             start = max(end - overlap, 0)
 
         return chunks
+
+    def normalize_query(self, query: str) -> str:
+        return self.tokenizer.decode(
+            self.tokenizer.encode(
+                query,
+                truncation=True,
+                max_length=512,
+                add_special_tokens=False,
+            ),
+            skip_special_tokens=True,
+        )
+
+    def embed_query(self, query: str) -> tuple[str, List[float]]:
+        normalized_query = self.normalize_query(query)
+        if self.embedding_fn is None:
+            raise RuntimeError("embedding_fn is required for Qdrant retrieval")
+        return normalized_query, self.embedding_fn.embed_one(normalized_query)
         
     def retrieve_with_priority_filters(
         self,
@@ -111,10 +135,11 @@ class ContentUtils:
         location: Optional[str] = None,
         month_year: Optional[str] = None,
         title: Optional[str] = None,
-        k: int = 5,
-        min_results: int = 1,
+        k: int = K,
+        min_results: int = MIN_RESULTS,
         use_progressive_filtering: bool = True,
-    ) -> Tuple[Optional[Dict], str, List[Dict]]:
+        query_embedding: Optional[List[float]] = None,
+    ) -> RetrievalResult:
         """
         Performs semantic retrieval with optional progressive metadata filtering.
 
@@ -130,9 +155,8 @@ class ContentUtils:
                 strategies plus semantic fallback. When False, use semantic-only retrieval.
 
         Returns:
-            used_filter: The metadata filter that succeeded (or None)
-            strategy: Name of the retrieval strategy used
-            results: List of retrieved chunks with text, metadata, and similarity
+            Structured retrieval state containing raw candidates, relevant results,
+            the selected strategy, and per-strategy diagnostics.
         """
 
         def _clean(value: Optional[str], *, upper: bool = False) -> Optional[str]:
@@ -239,26 +263,18 @@ class ContentUtils:
 
         strategy_evaluations: List[Dict[str, Any]] = []
 
-        query = self.tokenizer.decode(
-            self.tokenizer.encode(
-                    query,
-                    truncation=True,
-                    max_length=512,
-                    add_special_tokens=False
-                ),
-                skip_special_tokens=True
-            )
+        query = self.normalize_query(query)
+        if self.embedding_fn is None:
+            raise RuntimeError("embedding_fn is required for Qdrant retrieval")
+        if query_embedding is None:
+            query_embedding = self.embedding_fn.embed_one(query)
 
         for strategy_name, where_filter in filter_attempts:
-            if self.embedding_fn is None:
-                raise RuntimeError("embedding_fn is required for Qdrant retrieval")
-
-            query_vector = self.embedding_fn.embed_one(query)
             qdrant_filter = (
                 chroma_where_to_qdrant_filter(where_filter) if where_filter else None
             )
             formatted = store.search(
-                query_vector=query_vector,
+                query_vector=query_embedding,
                 limit=k,
                 qdrant_filter=qdrant_filter,
             )
@@ -270,10 +286,32 @@ class ContentUtils:
             # preserving the empirically preferred nonlinear strategy score.
             strategy_scores = [1.0 / (2.0 - similarity) for similarity in similarities]
 
+            relevant_indices = [
+                index
+                for index, similarity in enumerate(similarities)
+                if similarity >= RELEVANT_CHUNK_THRESHOLD
+            ]
+            relevant_results = [formatted[index] for index in relevant_indices]
+            top_similarity = max(similarities) if similarities else None
+            relevant_similarities = [similarities[index] for index in relevant_indices]
+            similarity_score = (
+                sum(relevant_similarities) / len(relevant_similarities)
+                if relevant_similarities
+                else 0.0
+            )
+            if len(relevant_similarities) > 1:
+                variance = statistics.pvariance(relevant_similarities)
+                consistency_factor = max(0.0, 1.0 - variance * 5)
+            else:
+                variance = 0.0
+                consistency_factor = 0.0
+            consistency_score = similarity_score * consistency_factor
+
             doc_count = len(docs)
             normalized_score = (
-                sum(strategy_scores) / doc_count
-                if doc_count > 0
+                sum(strategy_scores[index] for index in relevant_indices)
+                / len(relevant_indices)
+                if relevant_indices
                 else 0.0
             )
 
@@ -285,32 +323,65 @@ class ContentUtils:
                     "docs": docs,
                     "metadatas": metadatas,
                     "similarities": similarities,
+                    "formatted_results": formatted,
+                    "relevant_results": relevant_results,
+                    "relevant_similarities": relevant_similarities,
+                    "relevant_count": len(relevant_results),
+                    "top_similarity": top_similarity,
+                    "similarity_score": similarity_score,
+                    "variance": variance,
+                    "consistency_factor": consistency_factor,
+                    "consistency_score": consistency_score,
                     "normalized_score": normalized_score,
                 }
             )
 
         valid_strategies = [
             s for s in strategy_evaluations
-            if s["doc_count"] >= min_results
+            if s["relevant_count"] >= min_results
         ]
 
-        for s in valid_strategies:
+        for s in strategy_evaluations:
+            if s["doc_count"] == 0:
+                rejection_reason = "no_results"
+            elif s["relevant_count"] < min_results:
+                rejection_reason = "insufficient_relevant_results"
+            else:
+                rejection_reason = "valid_retrieval"
             print(
-                f"Strategy passed filter: name={s.get('strategy_name')} "
+                f"Strategy evaluation: name={s.get('strategy_name')} "
                 f"score={float(s.get('normalized_score', 0.0)):.4f} "
-                f"doc_count={int(s.get('doc_count', 0))} (min_results={min_results})"
+                f"returned_count={int(s.get('doc_count', 0))} "
+                f"relevant_count={int(s.get('relevant_count', 0))} "
+                f"raw_similarities={s.get('similarities', [])} "
+                f"relevant_similarities={s.get('relevant_similarities', [])} "
+                f"top_similarity={s.get('top_similarity')} "
+                f"similarity_score={s.get('similarity_score', 0.0):.4f} "
+                f"variance={s.get('variance', 0.0):.6f} "
+                f"consistency_factor={s.get('consistency_factor', 0.0):.4f} "
+                f"consistency_score={s.get('consistency_score', 0.0):.4f} "
+                f"eligible={s['relevant_count'] >= min_results} "
+                f"reason={rejection_reason}"
             )
 
         if valid_strategies:
             best_strategy = max(valid_strategies, key=lambda s: s["normalized_score"])
-            return (
-                best_strategy["where_filter"],
-                best_strategy["strategy_name"],
-                _format_results(
-                    best_strategy["docs"],
-                    best_strategy["metadatas"],
-                    best_strategy["similarities"],
-                ),
+            return RetrievalResult(
+                query=query,
+                used_filter=best_strategy["where_filter"],
+                strategy=best_strategy["strategy_name"],
+                results=best_strategy["formatted_results"],
+                relevant_results=best_strategy["relevant_results"],
+                strategy_diagnostics=strategy_evaluations,
+                query_embedding=query_embedding,
             )
 
-        return None, "no_results", []
+        return RetrievalResult(
+            query=query,
+            used_filter=None,
+            strategy="no_results",
+            results=[],
+            relevant_results=[],
+            strategy_diagnostics=strategy_evaluations,
+            query_embedding=query_embedding,
+        )

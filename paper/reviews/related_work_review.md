@@ -4,7 +4,7 @@
 
 The section has a sound organizing logic and generally represents the cited foundational papers fairly. Its descriptions of Flamingo, BLIP-2, LLaVA, OK-VQA, retrieval-augmented VQA, DPR, FLARE, Adaptive-RAG, Self-RAG, CRAG, and WebGPT agree with the cited primary sources. The distinctions between a fixed routing heuristic and learned or token-level adaptive mechanisms are especially careful.
 
-The section is not yet publication-ready, however. Its final positioning claim is based on an incomplete set of close comparators as of September 2026, and two descriptions of MetaMIRAGE++'s metadata path conflict with the Methodology and repository evidence. The ending also presents a controlled study more definitively than the Experimental Setup can currently support.
+The section is not yet publication-ready, however. Its final positioning claim is based on an incomplete set of close comparators as of September 2026, and two descriptions of MIRAGE-CARMA's metadata path conflict with the Methodology and repository evidence. The ending also presents a controlled study more definitively than the Experimental Setup can currently support.
 
 ## Blocking revisions
 
@@ -13,16 +13,16 @@ The section is not yet publication-ready, however. Its final positioning claim i
 The statement that prior work only “separately establishes” agricultural multimodal evaluation, metadata-filtered retrieval, and adaptive evidence acquisition is no longer defensible without discussing work that combines several of these elements.
 
 - Sahay, Tekumalla, and Saladi, “MIRAGE: Metadata-guided Image Retrieval and Answer Generation for E-commerce Troubleshooting,” EACL 2026 Industry Track, uses structured metadata as a primary mechanism for multimodal retrieval and RAG. It differs in domain, retrieves and links visual content, and uses a schema of product attributes, context, and visual aspects, but it is a direct metadata-guided multimodal RAG comparator. It also creates a serious name-collision risk. Primary record: https://aclanthology.org/2026.eacl-industry.56/; DOI: `10.18653/v1/2026.eacl-industry.56`.
-- Liu et al., “TARAG: A time-aware retrieval-augmented generation framework for supporting precision crop pest and disease management through large language models,” *Computers and Electronics in Agriculture* 248 (2026), 111786, is a direct agricultural and temporal-RAG comparator. It builds a time-annotated agricultural knowledge base and combines hybrid retrieval with time-sensitive reranking. MetaMIRAGE++ uses an exact `month_year` payload constraint rather than phenology/life-stage modeling, but that difference must be articulated rather than leaving TARAG absent. Primary publisher record: https://www.sciencedirect.com/science/article/pii/S0168169926003819.
+- Liu et al., “TARAG: A time-aware retrieval-augmented generation framework for supporting precision crop pest and disease management through large language models,” *Computers and Electronics in Agriculture* 248 (2026), 111786, is a direct agricultural and temporal-RAG comparator. It builds a time-annotated agricultural knowledge base and combines hybrid retrieval with time-sensitive reranking. MIRAGE-CARMA uses an exact `month_year` payload constraint rather than phenology/life-stage modeling, but that difference must be articulated rather than leaving TARAG absent. Primary publisher record: https://www.sciencedirect.com/science/article/pii/S0168169926003819.
 - Liu et al., “An Intelligent Multi-modal Q&A System for Agriculture Combining APGM, PBTCS, and RAG,” *Smart Agricultural Technology* 13 (2026), 101829, combines an agricultural multimodal question-answering model, a domain knowledge base, RAG, and a complexity-based model-routing strategy. Its fruit-tree scope, trained multimodal architecture, and resource-routing objective differ from this work, but it invalidates any implication that agricultural multimodal RAG itself is unstudied. Primary publisher record: https://www.sciencedirect.com/science/article/pii/S2772375526000535; DOI: `10.1016/j.atech.2026.101829`.
 
 Acceptance criterion: add a concise comparison to at least these three direct systems, or state and justify a literature cutoff that predates them. Rewrite the final positioning paragraph so the contribution rests on the specific implemented combination—eligible exact agricultural metadata scopes, a deterministic evidence-quality routing score, isolated run-time ingestion, and MIRAGE evaluation—rather than on an unqualified claim that the surrounding strands have appeared only separately. Do not claim uniqueness unless a broader, documented search supports it.
 
 ### 2. The knowledge-intensive visual QA coverage omits the nearest two-stage retrieval work
 
-The subsection moves from OK-VQA directly to one end-to-end differentiable retriever-generator. That makes MetaMIRAGE++'s “modular inference design” appear less connected to prior work than it is. Wu and Mooney's EnFoRe uses the established two-stage outside-knowledge VQA pattern—retrieve external textual knowledge, then answer with a VQA model—and specifically targets overly general retrieval through question-relevant entities. MuRAG is also needed to define the retrieval-modality boundary: it retrieves from a multimodal memory, whereas MetaMIRAGE++ retrieves text passages and supplies user images only to the downstream generator.
+The subsection moves from OK-VQA directly to one end-to-end differentiable retriever-generator. That makes MIRAGE-CARMA's “modular inference design” appear less connected to prior work than it is. Wu and Mooney's EnFoRe uses the established two-stage outside-knowledge VQA pattern—retrieve external textual knowledge, then answer with a VQA model—and specifically targets overly general retrieval through question-relevant entities. MuRAG is also needed to define the retrieval-modality boundary: it retrieves from a multimodal memory, whereas MIRAGE-CARMA retrieves text passages and supplies user images only to the downstream generator.
 
-Acceptance criterion: cite and compare (i) Wu and Mooney, “Entity-Focused Dense Passage Retrieval for Outside-Knowledge Visual Question Answering,” EMNLP 2022, https://aclanthology.org/2022.emnlp-main.551/, and (ii) Chen et al., “MuRAG: Multimodal Retrieval-Augmented Generator for Open Question Answering over Images and Text,” EMNLP 2022, https://aclanthology.org/2022.emnlp-main.375/. State explicitly that MetaMIRAGE++ uses a text-only retriever/controller and does not retrieve images. This comparison should replace any implication that modular retrieval before VQA is itself novel.
+Acceptance criterion: cite and compare (i) Wu and Mooney, “Entity-Focused Dense Passage Retrieval for Outside-Knowledge Visual Question Answering,” EMNLP 2022, https://aclanthology.org/2022.emnlp-main.551/, and (ii) Chen et al., “MuRAG: Multimodal Retrieval-Augmented Generator for Open Question Answering over Images and Text,” EMNLP 2022, https://aclanthology.org/2022.emnlp-main.375/. State explicitly that MIRAGE-CARMA uses a text-only retriever/controller and does not retrieve images. This comparison should replace any implication that modular retrieval before VQA is itself novel.
 
 ### 3. Metadata provenance is misstated
 
@@ -38,15 +38,15 @@ Acceptance criterion: call semantic-only retrieval an always-eligible candidate 
 
 ### 5. The ending overstates the experimental status
 
-The claims that MetaMIRAGE++ “studies” the intersection in a “single ablation-ready inference architecture” and contributes a “controlled study” exceed what the Experimental Setup establishes. The repository verifies seven named RAG configurations plus a direct-generation path, not the requested nine-condition matrix. Two declared switches are not wired through the configuration reader, the checked-in launcher does not pass its selected ablation ID, and final run manifests and manipulation checks are absent. A codebase that exposes candidate configurations is not yet evidence of an executed controlled study.
+The claims that MIRAGE-CARMA “studies” the intersection in a “single ablation-ready inference architecture” and contributes a “controlled study” exceed what the Experimental Setup establishes. The repository verifies seven named RAG configurations plus a direct-generation path, not the requested nine-condition matrix. Two declared switches are not wired through the configuration reader, the checked-in launcher does not pass its selected ablation ID, and final run manifests and manipulation checks are absent. A codebase that exposes candidate configurations is not yet evidence of an executed controlled study.
 
 Acceptance criterion: frame the section as positioning an implemented architecture and a planned controlled evaluation until run artifacts exist. Use “supports controlled comparisons” only if the launch bindings and traces are verified. After experiments, restore stronger language only if the authoritative matrix, manifests, manipulation checks, and paired cohort demonstrate the claimed controls.
 
 ### 6. Resolve the system name before using it as settled terminology
 
-The Introduction marks “MetaMIRAGE++” as requiring verification, but Related Work treats the name as final. The EACL 2026 metadata-guided multimodal RAG paper named MIRAGE makes this more than a cosmetic issue: readers and search indexes can easily conflate the systems, while the agricultural benchmark is also named MIRAGE.
+The Introduction marks “MIRAGE-CARMA” as requiring verification, but Related Work treats the name as final. The EACL 2026 metadata-guided multimodal RAG paper named MIRAGE makes this more than a cosmetic issue: readers and search indexes can easily conflate the systems, while the agricultural benchmark is also named MIRAGE.
 
-Acceptance criterion: obtain the authors' final naming decision, remove the verification marker consistently across manuscript files, and include one unambiguous sentence distinguishing the proposed system from both the agricultural MIRAGE benchmark and Sahay et al.'s e-commerce MIRAGE system. If “MetaMIRAGE++” remains, cite the benchmark on first use and avoid using bare “MIRAGE” for the proposed method.
+Acceptance criterion: obtain the authors' final naming decision, remove the verification marker consistently across manuscript files, and include one unambiguous sentence distinguishing the proposed system from both the agricultural MIRAGE benchmark and Sahay et al.'s e-commerce MIRAGE system. If “MIRAGE-CARMA” remains, cite the benchmark on first use and avoid using bare “MIRAGE” for the proposed method.
 
 ### 7. Correct and upgrade the bibliographic records
 
@@ -76,7 +76,7 @@ The clauses about observed tool calls, prompt enforcement, shared run collection
 
 ### Use one stable term for the routing signal
 
-The draft alternates among “confidence mechanism,” “confidence estimate,” “confidence heuristic,” and “retrieval similarity.” The terminology note correctly defines **confidence evaluation** as a deterministic score over mean similarity, coverage, consistency, and scope. Prefer “retrieval-confidence heuristic” or “confidence evaluation” for MetaMIRAGE++, and reserve “model uncertainty” or “correctness probability” for methods that actually estimate those quantities.
+The draft alternates among “confidence mechanism,” “confidence estimate,” “confidence heuristic,” and “retrieval similarity.” The terminology note correctly defines **confidence evaluation** as a deterministic score over mean similarity, coverage, consistency, and scope. Prefer “retrieval-confidence heuristic” or “confidence evaluation” for MIRAGE-CARMA, and reserve “model uncertainty” or “correctness probability” for methods that actually estimate those quantities.
 
 ## Verified claim audit
 
@@ -91,5 +91,5 @@ The draft alternates among “confidence mechanism,” “confidence estimate,�
 | FLARE, Adaptive-RAG, Self-RAG, and CRAG adapt retrieval at different stages | Supported; the draft distinguishes their mechanisms fairly. |
 | CRAG uses retrieval-quality evaluation and web search as a corrective source | Supported by arXiv:2401.15884. |
 | WebGPT searches/navigates the web and collects references | Supported by arXiv:2112.09332. |
-| MetaMIRAGE++ enumerates eligible metadata scopes and uses an uncalibrated deterministic routing heuristic | Supported by repository evidence, subject to the controller-supplied `title`/`month_year` correction above. |
-| MetaMIRAGE++ has completed a controlled ablation study | Not supported by the current repository or manuscript evidence. |
+| MIRAGE-CARMA enumerates eligible metadata scopes and uses an uncalibrated deterministic routing heuristic | Supported by repository evidence, subject to the controller-supplied `title`/`month_year` correction above. |
+| MIRAGE-CARMA has completed a controlled ablation study | Not supported by the current repository or manuscript evidence. |

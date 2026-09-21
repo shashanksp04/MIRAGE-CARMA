@@ -1,8 +1,8 @@
-# MetaMIRAGE Preload Pipeline — Finalized Architecture
+# MIRAGE-CARMA Preload Pipeline — Finalized Architecture
 
 ## 1. Purpose
 
-This document defines the finalized architecture for the MetaMIRAGE offline database-building pipeline.
+This document defines the finalized architecture for the MIRAGE-CARMA offline database-building pipeline.
 
 The pipeline is designed for:
 
@@ -12,7 +12,7 @@ The pipeline is designed for:
 - Strong restart/resume behavior.
 - Global deduplication across runs.
 - Qualification of documents before expensive RAG indexing.
-- A hard metadata contract compatible with MetaMIRAGE priority retrieval.
+- A hard metadata contract compatible with MIRAGE-CARMA priority retrieval.
 - Batched embedding and Qdrant ingestion.
 - Automated cumulative Qdrant snapshots and run manifests.
 - Reuse of the same qualification outputs for the crop dictionary builder.
@@ -2101,7 +2101,7 @@ The following are considered finalized:
 
 # 49. Current Implementation Status
 
-The architecture is considered frozen and is implemented by the MetaMIRAGE cumulative Qdrant preload notebook.
+The architecture is considered frozen and is implemented by the MIRAGE-CARMA cumulative Qdrant preload notebook.
 
 Before a real state run:
 

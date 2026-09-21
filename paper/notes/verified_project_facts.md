@@ -4,16 +4,16 @@ Evidence audit date: 2026-09-12. These notes distinguish executable code from de
 
 ## System identity and scope
 
-- The repository calls the implemented system both **MIRAGE-RAG** and **MetaMIRAGE**. The `MetaMIRAGE++` name does not occur in the implementation or project documentation and therefore is not yet a repository-verified system name (`README.MD:1-5`; `MSCdocs/CS597-REPORT.md:1-17`).
+- The repository calls the implemented system both **MIRAGE-CARMA** and **MIRAGE-CARMA**. The `MIRAGE-CARMA` name does not occur in the implementation or project documentation and therefore is not yet a repository-verified system name (`README.MD:1-5`; `MSCdocs/CS597-REPORT.md:1-17`).
 - The executable runtime is an agricultural, multimodal RAG pipeline: benchmark records contain a question, one to three image paths, an expert answer, category/entity fields, state, county, and asked time; the runtime adds location text to the question, retrieves textual evidence, and sends that evidence plus the images to a generation model (`Datasets/standard/standard_benchmark.json`; `Inference/generate.py:477-512`, `Inference/generate.py:779-823`).
 
 ## End-to-end inference architecture
 
 - `Generate` loads the input JSON array, optionally skips IDs already successfully written to the JSONL output, optionally filters by state, and supports a no-RAG baseline (`Inference/generate.py:585-621`).
-- The RAG path resolves one run-level runtime collection before creating workers. It uses Python's `spawn` multiprocessing context, creates one RAG worker per detected GPU (or one if none is detected), and maps workers to OpenAI-compatible endpoints beginning at port 11434 (`Inference/generate.py:623-704`; endpoint construction at `Inference/generate.py:28-50`).
+- The RAG path resolves one run-level runtime collection before creating workers. In the standard four-GPU configuration it uses Python's `spawn` context, assigns three RAG workers to endpoints `11434`–`11436`, and reserves endpoint `11437` for final generation (`Inference/generate.py`; endpoint construction at `Inference/generate.py:45-73`).
 - Rank 0 is started and required to report `READY` before the remaining RAG workers are started. All workers receive the same runtime collection name. A separate multiprocessing pool performs final answer generation; its size is controlled by `--num_processes` rather than GPU count (`Inference/generate.py:651-725`).
 - Each RAG worker creates one `MainAgent`, optional `CropQueryEnricher`, and Google ADK `InMemoryRunner`. Each item gets a session ID of the form `rag_session_<item_id>` (`Inference/generate.py:228-267`, `Inference/generate.py:328-364`; `rag_agent/main.py:538-609`).
-- The final context is constructed literally as `effective_query + "\n\nadditional context: " + rag_answer`. If RAG has a soft failure, generation receives the effective query without retrieved context. A hard RAG failure is retried up to two total RAG attempts and then skips generation (`Inference/generate.py:472-475`, `Inference/generate.py:779-803`).
+- On RAG success, final context is constructed from the effective query plus the text of structured retrieved evidence. `insufficient_evidence` and `invalid_output` fall back to the effective query; explicit hard failures are retried up to two total RAG attempts and then skip generation (`Inference/generate.py`).
 - Final open-source-model generation uses `chat_models.Client` with `max_completion_tokens=4096`, `temperature=0.8`, and `top_p=0.95`; all valid images are encoded as data URLs and included unless optional image combining is enabled (`chat_models/Client.py:19-53`). Image combining is independent of ablations, retains at most three images, resizes each into a 512-by-512 panel, and adds a panel-description hint (`Inference/generate.py:57-116`, `Inference/generate.py:477-512`).
 - The no-RAG baseline bypasses RAG workers and crop enrichment and generates from the location-prefixed user question and images. It records `RAG_status="disabled"` and `RAG_used=false` (`Inference/generate.py:539-583`).
 
@@ -30,17 +30,17 @@ Evidence audit date: 2026-09-12. These notes distinguish executable code from de
 - The canonical runtime chunk payload contains `source_type`, `source_id`, `title`, `url`, `page`, `chunk_index`, `location`, `month_year`, `content_hash`, `language`, and `hardiness_zone`. If the hardiness zone is not supplied, it is derived from location (`rag_agent/utils/metadata.py:304-338`).
 - Hardiness-zone lookup uses `Datasets/county_state_hardiness_zone.csv`. County-plus-state lookup is preferred; a state-only or unmatched-county query falls back to the modal hardiness zone for that state (`rag_agent/utils/metadata.py:212-301`).
 - With progressive filtering enabled, each available combination in this set is evaluated: `hardiness_zone+month_year+title`, `hardiness_zone+title`, `title`, `month_year`, `hardiness_zone+month_year`, `hardiness_zone`, and semantic-only. With it disabled, only semantic-only retrieval runs (`rag_agent/utils/ContentUtils.py:177-224`).
-- Each strategy retrieves up to five hits by default. Its selection score is the mean of `1/(2-s)` over returned raw cosine similarities `s`; among strategies returning at least one result, the highest-scoring strategy is selected (`rag_agent/utils/ContentUtils.py:226-316`).
+- Each strategy retrieves up to five hits by default. Its selection score is the mean of `1/(2-s)` over semantically relevant raw cosine similarities `s`; a strategy is eligible only with at least two chunks at or above `0.65` (`rag_agent/utils/ContentUtils.py`).
 - Location itself is not used as a Qdrant equality filter; it is normalized and converted to a hardiness zone (`rag_agent/utils/ContentUtils.py:177-185`).
 - Query text is truncated to 512 tokens with the embedding model tokenizer before embedding (`rag_agent/utils/ContentUtils.py:242-256`).
 
 ## Confidence mechanism
 
-- Confidence evaluation performs its own retrieval over the same dual retriever; it does not reuse a previously returned retrieval object (`rag_agent/tools/confidence_evaluator.py:76-91`).
-- No results or a retrieval exception yields low confidence with score 0.0 rather than terminating the item (`rag_agent/tools/confidence_evaluator.py:92-118`).
-- For nonempty evidence, the score is
-  `0.50 * mean_similarity + 0.20 * coverage + 0.20 * consistency + 0.10 * scope`, rounded to three decimals. Coverage is `min(number_of_hits/5, 1)`. Consistency is `max(0, 1 - 5*population_variance)` for multiple hits and 0.7 for one hit (`rag_agent/tools/confidence_evaluator.py:120-152`).
-- Scope weights are 1.0 for `hardiness_zone+month_year+title`, 0.9 for `hardiness_zone+month_year`, 0.85 for `hardiness_zone+title`, 0.8 for `hardiness_zone`, 0.75 for `month_year`, 0.7 for `title`, and 0.4 for semantic-only. Scores at least 0.75 are high, scores at least 0.5 and below 0.75 are medium, and lower scores are low (`rag_agent/tools/confidence_evaluator.py:133-171`).
+- Confidence evaluation consumes the previously returned `RetrievalResult`; it performs no Qdrant search, embedding, or model call (`rag_agent/tools/confidence_evaluator.py`).
+- No results, a top raw cosine score below `0.60`, or fewer than two relevant chunks yields low confidence with score 0.0 rather than terminating the item.
+- For valid evidence, the score is
+  `0.70 * similarity + 0.15 * relevant_coverage + 0.10 * relevance_scaled_consistency + 0.05 * scope`, rounded to three decimals. Coverage is `min(relevant_count/5, 1)`. Consistency is similarity multiplied by `max(0, 1 - 5*population_variance)` (`rag_agent/tools/confidence_evaluator.py`).
+- Scope weights are 1.0 for `hardiness_zone+month_year+title`, 0.9 for `hardiness_zone+month_year`, 0.85 for `hardiness_zone+title`, 0.8 for `hardiness_zone`, 0.75 for `month_year`, 0.7 for `title`, and 0.4 for semantic-only. Scores at least 0.78 are high, scores at least 0.60 and below 0.78 are medium, and lower scores are low.
 
 ## Agent control flow and web augmentation
 

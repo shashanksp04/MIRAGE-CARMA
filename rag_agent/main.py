@@ -13,6 +13,15 @@ from .utils.ContentUtils import ContentUtils
 from .utils.Embedding import SentenceTransformerEmbeddingFunction
 from .utils.qdrant_store import QdrantStore
 from .utils.dual_collection_retriever import DualCollectionRetriever, CrossCollectionDeduplicator
+from .utils.rag_state import (
+    RAG_INSUFFICIENT_EVIDENCE,
+    RAG_INVALID_OUTPUT,
+    RAG_SUCCESS,
+    RAGRequestState,
+    RAGResult,
+    RetrievalResult,
+)
+from .tools.confidence_evaluator import MIN_RESULTS
 from google.adk.agents import LlmAgent
 from google.adk.runners import InMemoryRunner
 from google.adk.models.lite_llm import LiteLlm
@@ -91,6 +100,7 @@ class MainAgent:
         self.confidence_evaluator = ConfidenceEvaluator(self.dual_retriever, self.content_utils)
         self.keyword_extractor = KeywordExtractor(model_name=test_model, openai_api_base=api_base)
         self.current_location: Optional[str] = None
+        self.request_state = RAGRequestState()
         # Ablation toggle: set False to disable location-aware domain filtering for all web searches.
         self.use_domain_filter: bool = True
         # Ablation toggle: set False to disable progressive metadata filtering (semantic-only retrieval).
@@ -234,6 +244,80 @@ class MainAgent:
             "use_progressive_filtering": self.use_progressive_filtering,
             "use_domain_filter": self.use_domain_filter,
         }
+
+    def begin_request(self) -> None:
+        self.request_state.reset()
+
+    def _get_query_embedding(self, query: str):
+        normalized_query = self.content_utils.normalize_query(query)
+        cached = self.request_state.embedding_cache.get(normalized_query)
+        if cached is None:
+            _, cached = self.content_utils.embed_query(normalized_query)
+            self.request_state.embedding_cache[normalized_query] = cached
+        return normalized_query, cached
+
+    def finalize_rag_result(self, *, agent_message: Optional[str] = None) -> RAGResult:
+        state = self.request_state
+        retrieval = state.latest_retrieval
+        confidence = state.latest_confidence
+        if agent_message:
+            state.agent_messages.append(agent_message)
+
+        if retrieval is None:
+            return RAGResult(
+                status=RAG_INVALID_OUTPUT,
+                web_search_performed=state.web_search_performed,
+                web_content_ingested=state.web_content_ingested,
+                agent_message=agent_message,
+                error="retrieval_state_missing",
+            )
+
+        if self.use_confidence_eval and confidence is None:
+            return RAGResult(
+                status=RAG_INVALID_OUTPUT,
+                evidence=retrieval.relevant_results,
+                strategy=retrieval.strategy,
+                web_search_performed=state.web_search_performed,
+                web_content_ingested=state.web_content_ingested,
+                agent_message=agent_message,
+                retrieval_state=retrieval.to_tool_dict(),
+                error="confidence_state_missing",
+            )
+
+        confidence_level = (confidence or {}).get("confidence_level")
+        confidence_score = (confidence or {}).get("confidence_score")
+        if self.use_confidence_eval and confidence_level not in {"medium", "high", "low"}:
+            return RAGResult(
+                status=RAG_INVALID_OUTPUT,
+                evidence=retrieval.relevant_results,
+                strategy=retrieval.strategy,
+                confidence=confidence_level,
+                confidence_score=confidence_score,
+                web_search_performed=state.web_search_performed,
+                web_content_ingested=state.web_content_ingested,
+                agent_message=agent_message,
+                retrieval_state=retrieval.to_tool_dict(),
+                error="invalid_confidence_state",
+            )
+
+        if retrieval.relevant_count < MIN_RESULTS or (
+            self.use_confidence_eval and confidence_level == "low"
+        ):
+            status = RAG_INSUFFICIENT_EVIDENCE
+        else:
+            status = RAG_SUCCESS
+
+        return RAGResult(
+            status=status,
+            evidence=retrieval.relevant_results if status == RAG_SUCCESS else [],
+            strategy=retrieval.strategy,
+            confidence=confidence_level,
+            confidence_score=confidence_score,
+            web_search_performed=state.web_search_performed,
+            web_content_ingested=state.web_content_ingested,
+            agent_message=agent_message,
+            retrieval_state=retrieval.to_tool_dict(),
+        )
     
     def _tracked_retrieve_content(
         self,
@@ -348,20 +432,13 @@ class MainAgent:
         """
         import sys
         print(f"[RAG Tools] evaluate_retrieval_confidence: CALLED", flush=True)
-        effective_location = location or getattr(self, "current_location", None)
-        effective_use_progressive_filtering = (
-            use_progressive_filtering
-            if use_progressive_filtering is not None
-            else self.use_progressive_filtering
-        )
         result = self.confidence_evaluator.evaluate_retrieval_confidence(
             query=query,
-            location=effective_location,
-            month_year=month_year,
-            title=title,
+            retrieval_result=self.request_state.latest_retrieval,
             k=k,
-            use_progressive_filtering=effective_use_progressive_filtering,
+            use_progressive_filtering=use_progressive_filtering,
         )
+        self.request_state.latest_confidence = result
         status = result.get("status", "unknown")
         if status == "success":
             confidence_level = result.get("confidence_level", "unknown")
@@ -406,6 +483,7 @@ class MainAgent:
             location=effective_location,
             use_domain_filter=effective_use_domain_filter,
         )
+        self.request_state.web_search_performed = True
         status = result.get("status", "unknown")
         if status == "success":
             results_count = len(result.get("results", []))
@@ -425,6 +503,7 @@ class MainAgent:
         before = self.client.count(collection_name=self.collection_name).count
         result = self.web_addition.add_web_content(url=url, location=location, 
                 month_year=month_year, language=language)
+        self.request_state.web_content_ingested += int(result.get("chunks_added", 0) or 0)
         after = self.client.count(collection_name=self.collection_name).count
         print(f"[RAG Tools] add_web_content: count delta={after-before} (before={before}, after={after})", flush=True)
         status = result.get("status", "unknown")
@@ -453,6 +532,7 @@ class MainAgent:
             month_year=month_year,
             language=language,
         )
+        self.request_state.web_content_ingested += int(result.get("chunks_added", 0) or 0)
         status = result.get("status", "unknown")
         if status == "success":
             print(f"[RAG Tools] ✓ add_pdf_content: SUCCESS")
@@ -513,27 +593,31 @@ class MainAgent:
             if use_progressive_filtering is not None
             else self.use_progressive_filtering
         )
-        used_filter, strategy, results = self.dual_retriever.retrieve_with_priority_filters(
+        normalized_query, query_embedding = self._get_query_embedding(query)
+        retrieval = self.dual_retriever.retrieve_with_priority_filters(
             query=query,
             location=location,
             month_year=month_year,
             title=title,
             use_progressive_filtering=effective_use_progressive_filtering,
+            query_embedding=query_embedding,
         )
+        retrieval.query = normalized_query
+        self.request_state.latest_retrieval = retrieval
 
-        if not results:
+        if not retrieval.relevant_results:
             return {
                 "status": "error",
                 "error_message": "No results found",
+                "query": normalized_query,
                 "results": [],
+                "returned_count": retrieval.returned_count,
+                "relevant_count": retrieval.relevant_count,
+                "strategy": retrieval.strategy,
+                "strategy_diagnostics": retrieval.strategy_diagnostics,
             }
 
-        return {
-            "status": "success",
-            "used_filter": used_filter,
-            "strategy": strategy,
-            "results": results,
-        }
+        return retrieval.to_tool_dict()
 
     def main(self):
         import os

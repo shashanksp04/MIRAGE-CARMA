@@ -1,8 +1,15 @@
-# MetaMIRAGE Inference Database Architecture — Implementation Plan
+# MIRAGE-CARMA Inference Database Architecture — Implementation Plan
+
+> **Implementation status addendum:** The database architecture described below
+> remains the lifecycle contract. The current inference runtime additionally uses
+> structured RAG results, raw-cosine semantic gating, request-level embedding
+> reuse, explicit mutually exclusive RAG outcome statuses, and a default 3-RAG
+> GPU / 1-generation GPU split. See `Guide.md` and `Inference/README.md` for the
+> operational runtime behavior.
 
 ## 0. Purpose
 
-This document is the implementation plan for changing MetaMIRAGE inference from a **single mutable Qdrant collection** into a **base + runtime collection architecture**.
+This document is the implementation plan for changing MIRAGE-CARMA inference from a **single mutable Qdrant collection** into a **base + runtime collection architecture**.
 
 The normal/final inference path uses two collections:
 
@@ -27,7 +34,7 @@ The core goal is to prevent runtime web augmentation from contaminating the cura
 
 `USE_BASE_COLLECTION=False` is **not a second architecture**. It is a narrow conditional mode of the same implementation: skip base verification, base retrieval, and base-side deduplication while keeping the same runtime lifecycle, retriever, ingestion path, confidence flow, and evaluation code.
 
-This plan is intentionally implementation-oriented and should be used as context for an engineering agent modifying the current MetaMIRAGE codebase.
+This plan is intentionally implementation-oriented and should be used as context for an engineering agent modifying the current MIRAGE-CARMA codebase.
 
 ---
 
@@ -275,7 +282,7 @@ Important:
 - Runtime collection lifecycle is unchanged.
 - Runtime collection naming is unchanged.
 - `resume` / `fresh` semantics are unchanged.
-- Confidence evaluation is unchanged.
+- Confidence evaluation now consumes the existing structured merged retrieval result without retrieving again. Current semantic gates require a top raw cosine score of at least `0.60` and at least two chunks at or above `0.65`; see `Guide.md` for the current weights and classification thresholds.
 - Web/PDF ingestion is unchanged except that base-side duplicate checking is skipped.
 - Do not create a separate retriever/agent stack for this mode.
 - Never auto-create an empty `mirage_base` when the flag is `False`.
@@ -496,7 +503,7 @@ When override is used:
 
 # 5. Qdrant Server Responsibility
 
-MetaMIRAGE inference does **not** own the base database storage directory.
+MIRAGE-CARMA inference does **not** own the base database storage directory.
 
 The Qdrant server will be started externally by the user from the correct persistent location.
 
@@ -1290,26 +1297,26 @@ merged winning strategy
 ConfidenceEvaluator
 ```
 
-Keep the existing confidence formula and thresholds unchanged.
+Use the current relevance-gated confidence formula and thresholds documented below.
 
 Current model:
 
 ```text
-Similarity    50%
-Coverage      20%
-Consistency   20%
-Scope         10%
+Similarity    70%
+Coverage      15%
+Consistency   10%
+Scope          5%
 ```
 
 Thresholds:
 
 ```text
->= 0.75       high
->= 0.50       medium
-<  0.50       low
+>= 0.78       high
+>= 0.60       medium
+<  0.60       low
 ```
 
-This update changes where results come from, not how confidence itself is mathematically defined.
+Confidence uses relevant chunks only for similarity and coverage; consistency is scaled by similarity quality. The query embedding is reused across progressive strategies and post-ingestion retrieval.
 
 ---
 
@@ -1692,7 +1699,7 @@ Snapshot support should be isolated in the database manager.
 
 The Qdrant server owns its snapshot/storage location.
 
-The inference code should not assume the base database directory is inside the MetaMIRAGE repository.
+The inference code should not assume the base database directory is inside the MIRAGE-CARMA repository.
 
 For runtime snapshots:
 
@@ -1895,7 +1902,7 @@ class DualCollectionRetriever:
         month_year=None,
         title=None,
         k=5,
-        min_results=1,
+        min_results=2,
     ):
         ...
 ```
@@ -3104,7 +3111,7 @@ Database lifecycle settings are run configuration, not scientific ablation seman
 Do not include the following in this implementation unless absolutely required:
 
 ```text
-moving Qdrant storage into MetaMIRAGE repo
+moving Qdrant storage into MIRAGE-CARMA repo
 base snapshot restore
 offline base promotion
 runtime-to-base synchronization
@@ -3249,7 +3256,7 @@ same retriever searches runtime only
 → no base request is made
 → runtime results are ranked normally
 → top-k returned
-→ confidence path remains unchanged
+→ confidence evaluates the existing structured retrieval result
 ```
 
 ### Ingestion

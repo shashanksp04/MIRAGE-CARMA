@@ -62,9 +62,9 @@ Also clarify that strategy selection occurs independently in the curated and run
 
 ### 10. Add manipulation checks for agent-mediated ablations
 
-Tool registration and natural-language instructions make a capability available; they do not prove that the controller invoked it as prescribed. This matters for confidence evaluation, web search, the ingestion loop, and crop enrichment, each of which can fail or leave the query unchanged. The current JSONL records a coarse web-search flag and RAG status but not the complete tool sequence, selected retrieval strategy, retrieved chunk identities, confidence values, effective enriched query, URLs, or ingestion outcome.
+Tool registration and natural-language instructions make a capability available; they do not prove that the controller invoked it as prescribed. This matters for confidence evaluation, web search, the ingestion loop, and crop enrichment, each of which can fail or leave the query unchanged. The current JSONL records structured RAG status, confidence, retrieval state, web-search activity, ingestion count, and diagnostic agent text, while the complete tool sequence and source URLs remain outside the item-level record.
 
-For each condition, retain and summarize manipulation checks: crop-enrichment attempted/changed/failed counts; retrieval and confidence call counts; selected strategies; low-confidence frequency; web calls; pages successfully ingested; second-retrieval compliance; soft and hard failures; and evidence actually passed to generation. Without these checks, describe results as effects of *configuration access* rather than effects of components that definitely executed.
+For each condition, retain and summarize manipulation checks: crop-enrichment attempted/changed/failed counts; retrieval and confidence call counts; selected strategies; low-confidence frequency; web calls; pages successfully ingested; structured retrieval-state reuse; explicit RAG outcomes; and evidence actually passed to generation. Without these checks, describe results as effects of *configuration access* rather than effects of components that definitely executed.
 
 ## Major but nonblocking revisions
 

@@ -96,13 +96,15 @@ We redesigned the pipeline into a **multi-stage, GPU-aware architecture**.
 ```
 Input Dataset
       ↓
+Query enrichment
+      ↓
 Shared RAG Request Queue
       ↓
-Multiple RAG Worker Processes (1 per GPU)
+Three RAG Worker Processes (GPUs 0–2)
       ↓
-RAG Response Queue
+Structured RAG Response Queue
       ↓
-Multiprocessing Generation Pool
+Single-concurrency Generation Worker (GPU 3)
       ↓
 Write Output
 ```
@@ -123,15 +125,13 @@ Write Output
 
 ## Stage 2: RAG Worker Layer (GPU-Aware)
 
-For each detected GPU:
+The default four-GPU allocation is fixed by workload:
 
-* One `rag_worker_process` is created
-* Each worker connects to:
+* GPUs 0–2 run RAG workers at `11434`, `11435`, and `11436`.
+* GPU 3 runs final benchmark generation at `11437`.
+* Final generation starts with one active request at a time.
 
-  * `http://127.0.0.1:11434`
-  * `http://127.0.0.1:11435`
-  * `http://127.0.0.1:11436`
-  * etc.
+The split is controlled by `--rag_gpu_count` and `--generation_gpu_count`. It is intentionally not dynamically shared during initial experiments, so RAG and generation do not compete for model memory, KV cache, or server scheduling.
 
 Each GPU runs:
 
@@ -145,67 +145,40 @@ Each GPU runs:
 * True data-parallel scaling
 * No shared model memory
 * No GPU contention
-* Near-linear scaling with number of GPUs
+* Clear workload isolation and predictable generation latency
 
 ---
 
-## Stage 3: Generation Pool (CPU Parallel)
+## Stage 3: Generation Worker (Dedicated GPU)
 
-After RAG completes:
-
-* Generation is executed using multiprocessing pool
-* Generation parallelism is independent of GPU count
-* Scales with `--num_processes`
+After RAG completes, generation consumes the structured RAG result on the dedicated generation endpoint. It is intentionally limited to one active request initially; `--num_processes` remains a compatibility option but does not override this controlled generation concurrency.
 
 ---
 
-## RAG Failure Handling Strategy
+## RAG Outcome and Failure Handling
 
-We implemented a **best-of-both-worlds approach**:
+The current implementation does not use a generic `soft_fail` state or response-length heuristics. Outcomes are mutually exclusive:
 
-### Case 1: RAG Success
+* `success`: structured retrieved evidence passed semantic relevance and confidence requirements; evidence is appended to the effective query.
+* `insufficient_evidence`: RAG completed correctly but reliable evidence was not found; generation uses the effective query without a fabricated context message.
+* `invalid_output`: orchestration completed but structured retrieval state was malformed or missing; generation falls back to the effective query and records the invalid state.
+* `hard_fail_timeout`, `hard_fail_connection`, `hard_fail_model_service`, `hard_fail_worker`: infrastructure failures. These are retried only by the pipeline layer and are skipped after the retry limit.
 
-* Append retrieved context
-* Run generation
+The application owns structured retrieval state (`RetrievalResult` / `RAGResult`), including evidence, strategy, confidence, web-search activity, and ingestion counts. The agent controls tool calls, but its final prose is diagnostic and does not determine RAG success.
 
-### Case 2: Soft Failure
-
-Examples:
-
-* No results found
-* Short answer
-* Non-critical tool issue
-
-→ Fallback to original query
-→ Continue generation
-
-### Case 3: Hard Failure
-
-Examples:
-
-* Timeout
-* Connection error
-* Server unreachable
-
-→ Retry RAG (limited attempts)
-→ If still failing → Skip generation
-→ Log status
+Confidence evaluation is pure computation over the existing retrieval result. It performs no second Qdrant search, model call, or embedding. A query embedding is computed once per request and reused across progressive metadata strategies and post-ingestion retrieval.
 
 ---
 
-# 3️⃣ Multi-GPU Dynamic Scaling
+# 3️⃣ Multi-GPU Workload Isolation
 
-The system dynamically:
+The standard four-GPU configuration is intentionally split by workload:
 
-* Detects number of GPUs using `torch.cuda.device_count()`
-* Builds endpoint list automatically
-* Creates one RAG worker per GPU
+* GPUs 0–2: RAG workers on ports `11434`–`11436`.
+* GPU 3: final benchmark generation on port `11437`.
+* Final generation: one active request at a time.
 
-No code change required to scale from:
-
-* 1 GPU → 2 GPUs → 4 GPUs → N GPUs
-
-Just start additional model servers on sequential ports.
+The split is configured with `--rag_gpu_count` and `--generation_gpu_count`. A later experiment may evaluate a different split, such as 2+2, using observed RAG utilization and generation queue metrics. RAG and generation should not be dynamically shared in the initial architecture.
 
 ---
 
@@ -343,13 +316,13 @@ This makes the system production-resilient.
 
 # 6️⃣ Current Architecture Summary
 
-### ✔ GPU-Aware
+### ✔ GPU-Isolated
 
-One RAG worker per GPU.
+Three RAG workers use GPUs 0–2; GPU 3 is reserved for single-concurrency final generation.
 
-### ✔ Scalable
+### ✔ Controlled Scaling
 
-Auto-detects GPU count.
+The RAG/generation split is configurable through explicit GPU-count flags and should be adjusted using runtime utilization metrics.
 
 ### ✔ Qdrant Server Mode
 

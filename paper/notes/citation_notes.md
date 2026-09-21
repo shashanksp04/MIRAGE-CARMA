@@ -14,7 +14,7 @@
 
 - Haotian Liu, Chunyuan Li, Qingyang Wu, and Yong Jae Lee. “Visual Instruction Tuning.” NeurIPS 2023. arXiv:2304.08485.
 - Primary source: https://arxiv.org/abs/2304.08485
-- Manuscript use: supports the statement that a multimodal language model can connect a vision encoder and a language model for general-purpose visual and language instruction following. It is not evidence about the subject model used in the MetaMIRAGE++ experiments.
+- Manuscript use: supports the statement that a multimodal language model can connect a vision encoder and a language model for general-purpose visual and language instruction following. It is not evidence about the subject model used in the MIRAGE-CARMA experiments.
 
 ### `lewis2020rag`
 
@@ -32,7 +32,7 @@
 
 - Akari Asai, Zeqiu Wu, Yizhong Wang, Avirup Sil, and Hannaneh Hajishirzi. “Self-RAG: Learning to Retrieve, Generate, and Critique through Self-Reflection.” ICLR 2024. arXiv:2310.11511.
 - Primary source: https://openreview.net/forum?id=hSyW5go0v8
-- Manuscript use: supports the broader adaptive-retrieval premise that indiscriminately retrieving a fixed number of passages can be unhelpful and that retrieval can instead be invoked or assessed adaptively. MetaMIRAGE++ uses a different mechanism: a fixed retrieval heuristic and a prompt-directed tool policy.
+- Manuscript use: supports the broader adaptive-retrieval premise that indiscriminately retrieving a fixed number of passages can be unhelpful and that retrieval can instead be invoked or assessed adaptively. MIRAGE-CARMA uses a different mechanism: a fixed retrieval heuristic and a prompt-directed tool policy.
 
 ## Sources cited in Related Work
 
@@ -96,7 +96,7 @@
 - Yi Luan, Jacob Eisenstein, Kristina Toutanova, and Michael Collins. “Sparse, Dense, and Attentional Representations for Text Retrieval.” *Transactions of the Association for Computational Linguistics* 9 (2021): 329--345.
 - Primary source: https://aclanthology.org/2021.tacl-1.20/
 - DOI: https://doi.org/10.1162/tacl_a_00369
-- Claim mapping: supports the distinction between sparse, dense, and attentional relevance representations, limitations of fixed-dimensional dense encodings, and the motivation for combining complementary retrieval signals. It is not evidence that MetaMIRAGE++ implements lexical retrieval; the manuscript explicitly distinguishes its exact-filter-plus-dense design from a sparse--dense hybrid.
+- Claim mapping: supports the distinction between sparse, dense, and attentional relevance representations, limitations of fixed-dimensional dense encodings, and the motivation for combining complementary retrieval signals. It is not evidence that MIRAGE-CARMA implements lexical retrieval; the manuscript explicitly distinguishes its exact-filter-plus-dense design from a sparse--dense hybrid.
 
 ### `poliakov2025multimetarag`
 
@@ -127,14 +127,14 @@
 - Shi-Qi Yan, Jia-Chen Gu, Yun Zhu, and Zhen-Hua Ling. “Corrective Retrieval Augmented Generation.” arXiv:2401.15884, 2024.
 - Primary source: https://arxiv.org/abs/2401.15884
 - Stable identifier: https://doi.org/10.48550/arXiv.2401.15884
-- Claim mapping: supports retrieval-quality evaluation, confidence-conditioned corrective actions, and the use of web search to extend evidence beyond a static corpus. MetaMIRAGE++'s heuristic is not represented as CRAG's learned evaluator.
+- Claim mapping: supports retrieval-quality evaluation, confidence-conditioned corrective actions, and the use of web search to extend evidence beyond a static corpus. MIRAGE-CARMA's heuristic is not represented as CRAG's learned evaluator.
 
 ### `nakano2021webgpt`
 
 - Reiichiro Nakano, Jacob Hilton, Suchir Balaji, Jeff Wu, Long Ouyang, Christina Kim, Christopher Hesse, Shantanu Jain, Vineet Kosaraju, William Saunders, Xu Jiang, Karl Cobbe, Tyna Eloundou, Gretchen Krueger, Kevin Button, Matthew Knight, Benjamin Chess, and John Schulman. “WebGPT: Browser-assisted question-answering with human feedback.” arXiv:2112.09332, 2021.
 - Primary source: https://arxiv.org/abs/2112.09332
 - Stable identifier: https://doi.org/10.48550/arXiv.2112.09332
-- Claim mapping: supports browser-assisted question answering in which a model searches and navigates the web and gathers references for its answer. It does not support the implementation-specific claims about MetaMIRAGE++ runtime ingestion.
+- Claim mapping: supports browser-assisted question answering in which a model searches and navigates the web and gathers references for its answer. It does not support the implementation-specific claims about MIRAGE-CARMA runtime ingestion.
 
 ### `sahay2026ecommercemirage`
 
@@ -162,4 +162,4 @@
 
 - `dongre2025mirage`, `liu2023llava`, `lewis2020rag`, and `asai2024selfrag` are defined in the Introduction notes above and are reused in Related Work.
 - All implementation-specific comparisons in Related Work were checked against `paper/03_methodology.md`; literature citations support neighboring research designs, while repository evidence supports statements about the proposed system.
-- `MetaMIRAGE++` remains a provisional name. The manuscript distinguishes it from the agricultural MIRAGE benchmark and Sahay et al.'s unrelated e-commerce system named MIRAGE; final naming still requires an author decision recorded in `paper/notes/unresolved_questions.md`.
+- `MIRAGE-CARMA` remains a provisional name. The manuscript distinguishes it from the agricultural MIRAGE benchmark and Sahay et al.'s unrelated e-commerce system named MIRAGE; final naming still requires an author decision recorded in `paper/notes/unresolved_questions.md`.

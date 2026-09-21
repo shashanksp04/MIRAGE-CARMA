@@ -10,11 +10,13 @@ def encode_image(image_path):
     return base64.b64encode(image_file.read()).decode('utf-8')
 
 class OpenAI_Chat():
-    def __init__(self, model_name="gpt-4o", messages=[]):
-        self.client = OpenAI()
+    def __init__(self, model_name="gpt-4o", messages=None):
+        # Retries are owned by the generation worker so pipeline attempts remain
+        # bounded and do not multiply with SDK-level retries.
+        self.client = OpenAI(max_retries=0)
         self.model_name = model_name
-        self.messages = messages
-        self.history_info = copy.deepcopy(messages)
+        self.messages = list(messages or [])
+        self.history_info = copy.deepcopy(self.messages)
         # Define pricing per model
         self.pricing = {
             "gpt-4o": {

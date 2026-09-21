@@ -1,9 +1,9 @@
-# MetaMIRAGE Concurrent Preload — Complete Run Guide
+# MIRAGE-CARMA Concurrent Preload — Complete Run Guide
 
 **Status:** Current operational guide for the concurrent preload architecture
 **Supersedes:** The old sequential one-state-at-a-time `run.md` workflow
 
-This guide explains everything required to run the concurrent MetaMIRAGE preload system end to end:
+This guide explains everything required to run the concurrent MIRAGE-CARMA preload system end to end:
 
 - one shared **Qdrant server**;
 - one shared **Preload Coordinator API**;
@@ -2371,7 +2371,7 @@ The key operational rule is:
 
 > **Workers are concurrent within a wave; global finalization is serial between waves.**
 
-This preserves crash recovery, global deduplication, state-local persistence, cumulative crop state, and cumulative Qdrant checkpoints while allowing independent 1-GPU notebook allocations to build MetaMIRAGE in parallel.
+This preserves crash recovery, global deduplication, state-local persistence, cumulative crop state, and cumulative Qdrant checkpoints while allowing independent 1-GPU notebook allocations to build MIRAGE-CARMA in parallel.
 
 ---
 

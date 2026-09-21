@@ -253,6 +253,7 @@ class CropQueryEnricher:
                 api_key=self._api_key,
                 base_url=self._api_base,
                 timeout=self._timeout_seconds,
+                max_retries=0,
             )
             completion = client.chat.completions.create(
                 model=self._model,

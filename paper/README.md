@@ -1,4 +1,4 @@
-# MIRAGE-RAG Paper Workspace
+# MIRAGE-CARMA Paper Workspace
 
 This directory contains manuscript sections, internal evidence notes, and section reviews. Manuscript files are written as publication prose; implementation evidence and unresolved details are maintained under `notes/`.
 

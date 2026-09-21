@@ -10,7 +10,7 @@ These issues should be corrected before the section is treated as an accurate ac
 
 ### 1. The system name is not repository-verified
 
-The draft introduces *MetaMIRAGE++* as the system name in lines 5 and 13, but repository sources use **MIRAGE-RAG** and **MetaMIRAGE**; *MetaMIRAGE++* does not occur in the implementation or project documentation (`paper/notes/verified_project_facts.md:7`; `paper/notes/unresolved_questions.md`, question 13). Obtain an explicit naming decision or use a repository-supported name. If the new name is retained, define its relationship to MIRAGE, MIRAGE-RAG, and MetaMIRAGE once and use it consistently across all sections.
+The draft introduces *MIRAGE-CARMA* as the system name in lines 5 and 13, but repository sources use **MIRAGE-CARMA** and **MIRAGE-CARMA**; *MIRAGE-CARMA* does not occur in the implementation or project documentation (`paper/notes/verified_project_facts.md:7`; `paper/notes/unresolved_questions.md`, question 13). Obtain an explicit naming decision or use a repository-supported name. If the new name is retained, define its relationship to MIRAGE, MIRAGE-CARMA, and MIRAGE-CARMA once and use it consistently across all sections.
 
 ### 2. “Two models” is not an accurate architectural invariant
 
@@ -22,11 +22,9 @@ Lines 11, 17, 80--92, and 96 state or imply that the evidence agent follows the 
 
 Revise all such claims to distinguish the **prompt-specified policy** from the **Python-enforced path**. State explicitly that tool traces are observed but not validated for policy compliance. If the authors want to claim guaranteed verbatim evidence and bounded control flow, add deterministic orchestration or post-hoc validation and document it.
 
-### 4. The described “insufficient evidence” soft-failure path contradicts the code
+### 4. The structured insufficient-evidence path is now explicit
 
-Line 98 says that an “empty or insufficient evidence response” is a soft failure that causes generation from the enriched query alone. Empty/short responses are soft failures, but the exact low-confidence response required by the full prompt—`No sufficient reliable information available to return.`—is longer than the driver's 30-character cutoff. With no accompanying error, it is classified as a successful RAG answer and appended under `additional context` (`rag_agent/model_instructions.md:124-130`; `Inference/generate.py:141-148`, `:779-795`).
-
-This is a blocking factual error and likely an implementation bug. Either update `_is_soft_rag_failure` to recognize the canonical no-evidence messages and then describe that behavior, or revise the manuscript to report the current behavior. The former is scientifically preferable because it aligns the runtime with the stated method.
+The runtime now distinguishes `insufficient_evidence` and `invalid_output` from infrastructure failures. These completed outcomes fall back to the enriched query without appending the agent's final prose as evidence, and response length is not used to determine retrieval validity.
 
 ### 5. Configuration toggles are not strictly enforced against tool-call overrides
 
@@ -66,13 +64,13 @@ Also state whether these configured values produced the experimental base snapsh
 
 ### 11. Clarify query-vector computation and metadata arguments
 
-Line 43 says all strategies use “the same query vector.” The implementation truncates the same query and calls the embedder separately inside each strategy iteration (`rag_agent/utils/ContentUtils.py:242-264`). SentenceTransformer inference is expected to be stable, but the vector is recomputed rather than reused. Say “the same truncated query and embedding model,” or move embedding outside the loop if literal vector reuse is intended.
+All progressive strategies now receive the same request-level query vector. The vector is computed once and reused across metadata filters and post-ingestion retrieval.
 
-The initial retrieval uses a fixed default $k=5$, whereas the confidence tool exposes $k$ to the language model and normalizes malformed values. The confidence call can also use independently generated query/title/month arguments. Therefore, the “second retrieval” need not reproduce the first result set. State the defaults and argument source, or cache the first retrieval result and score that result directly (`rag_agent/main.py:329-364`, `:484-536`; `rag_agent/tools/confidence_evaluator.py:67-91`).
+The initial retrieval and confidence evaluation share the structured retrieval result with $k=5$ by default. Confidence evaluation no longer performs a second retrieval or independently embeds a model-generated query.
 
 ### 12. Present confidence as an uncalibrated routing heuristic
 
-The equations in lines 59--76 match the code, including population variance, the single-result constant, weights, rounding, and thresholds. Add that the weights and thresholds are fixed design choices with no repository evidence of calibration (`paper/notes/unresolved_questions.md`, question 18). Define the equations for $n\geq1$ before giving the $n=0$ branch. Because $S$ is an unclipped raw cosine score, $C$ should not be described or interpreted as a probability. “Confidence heuristic” or “routing score” is more precise than model uncertainty.
+The current equations use relevance-gated raw cosine scores, relevant coverage, relevance-scaled consistency, and metadata scope. The weights and thresholds remain initial design choices with no repository evidence of calibration. Because the semantic score is an unclipped cosine-derived signal, $C$ should not be described or interpreted as a probability. “Confidence heuristic” or “routing score” is more precise than model uncertainty.
 
 Coverage is hard-coded as $n/5$ even if the confidence call uses a nondefault $k$. Either fix $k=5$ at the API boundary or disclose that denominator choice. The scope term is also inherited from one collection rather than computed over the merged evidence; this limitation is correctly hinted at in line 53 but should be repeated briefly where $P$ is defined.
 

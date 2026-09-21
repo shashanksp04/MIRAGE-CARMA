@@ -1,7 +1,7 @@
 # Terminology
 
 - **MIRAGE:** the agricultural benchmark and source task on which this project builds. Use this name for the benchmark, not for the proposed system.
-- **MetaMIRAGE++:** the proposed metadata-aware, adaptive retrieval-augmented generation system. Use this form consistently in manuscript prose unless project ownership specifies a different final name.
+- **MIRAGE-CARMA:** the proposed metadata-aware, adaptive retrieval-augmented generation system. Use this form consistently in manuscript prose unless project ownership specifies a different final name.
 - **curated base collection:** the preloaded, read-only Qdrant collection used during inference (`mirage_base` in the implementation).
 - **runtime collection:** the mutable, run-scoped Qdrant collection that receives dynamically acquired web and PDF evidence.
 - **progressive metadata retrieval:** evaluation of multiple eligible metadata-filter combinations plus semantic-only retrieval, followed by selection based on retrieval score. Avoid wording that implies the first nonempty filter is accepted.

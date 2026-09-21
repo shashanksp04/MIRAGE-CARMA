@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from rag_agent.tools.confidence_evaluator import K, MIN_RESULTS, RELEVANT_CHUNK_THRESHOLD
+from rag_agent.utils.rag_state import RetrievalResult
+
 
 class DualCollectionRetriever:
     """One retrieval interface for optional curated base plus active runtime."""
@@ -22,28 +25,60 @@ class DualCollectionRetriever:
         return sorted(selected.values(), key=lambda r: r.get("similarity", -1.0), reverse=True)
 
     def retrieve_with_priority_filters(self, *, query, location=None, month_year=None,
-                                       title=None, k=5, min_results=1,
-                                       use_progressive_filtering=True):
+                                       title=None, k=K, min_results=MIN_RESULTS,
+                                       use_progressive_filtering=True,
+                                       query_embedding=None):
+        if query_embedding is None:
+            _, query_embedding = self.content_utils.embed_query(query)
         stores = [("runtime", self.runtime_store)]
         if self.base_store is not None:
             stores.insert(0, ("base", self.base_store))
         evaluations = []
         for source, store in stores:
-            used_filter, strategy, results = self.content_utils.retrieve_with_priority_filters(
+            retrieval = self.content_utils.retrieve_with_priority_filters(
                 query=query, store=store, location=location, month_year=month_year,
                 title=title, k=k, min_results=min_results,
                 use_progressive_filtering=use_progressive_filtering,
+                query_embedding=query_embedding,
             )
-            for result in results:
+            results = retrieval.results
+            for result in retrieval.relevant_results:
                 result["retrieval_source"] = source
-            evaluations.append((used_filter, strategy, results))
-        merged = self._dedupe([r for _, _, results in evaluations for r in results])[:k]
+            for result in results:
+                result.setdefault("retrieval_source", source)
+            evaluations.append((retrieval, source))
+        merged = self._dedupe([r for retrieval, _ in evaluations for r in retrieval.results])[:k]
         if not merged:
-            return None, "no_results", []
+            return RetrievalResult(
+                query=query,
+                used_filter=None,
+                strategy="no_results",
+                strategy_diagnostics=[
+                    diagnostic
+                    for retrieval, _ in evaluations
+                    for diagnostic in retrieval.strategy_diagnostics
+                ],
+                query_embedding=query_embedding,
+            )
         # Keep the existing strategy naming while confidence sees the merged evidence.
-        strategy = max(evaluations, key=lambda e: len(e[2]))[1]
-        used_filter = next((e[0] for e in evaluations if e[1] == strategy), None)
-        return used_filter, strategy, merged
+        selected = max(evaluations, key=lambda e: len(e[0].relevant_results))[0]
+        relevant = [
+            result for result in merged
+            if float(result.get("similarity", 0.0)) >= RELEVANT_CHUNK_THRESHOLD
+        ]
+        return RetrievalResult(
+            query=query,
+            used_filter=selected.used_filter,
+            strategy=selected.strategy,
+            results=merged,
+            relevant_results=relevant,
+            strategy_diagnostics=[
+                diagnostic
+                for retrieval, _ in evaluations
+                for diagnostic in retrieval.strategy_diagnostics
+            ],
+            query_embedding=query_embedding,
+        )
 
 
 class CrossCollectionDeduplicator:
