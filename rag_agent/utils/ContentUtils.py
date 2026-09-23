@@ -126,6 +126,31 @@ class ContentUtils:
         if self.embedding_fn is None:
             raise RuntimeError("embedding_fn is required for Qdrant retrieval")
         return normalized_query, self.embedding_fn.embed_one(normalized_query)
+
+    @staticmethod
+    def _canonicalize_similarity(result: Dict[str, Any]) -> Dict[str, Any]:
+        """Return a retrieval result with the canonical raw cosine score.
+
+        Older Qdrant adapters exposed ``distance`` (where cosine distance is
+        ``1 - cosine_similarity``), while the current retrieval code uses the
+        higher-is-better ``similarity`` name.  Normalize at this boundary so
+        stale workers or persisted compatibility code cannot break retrieval.
+        """
+        if "similarity" in result:
+            result["similarity"] = float(result["similarity"])
+            return result
+        if "score" in result:
+            # Some adapters expose Qdrant's raw cosine score as ``score``.
+            result["similarity"] = float(result["score"])
+            return result
+        if "distance" in result:
+            # Legacy adapter format: distance = 1 - cosine similarity.
+            result["similarity"] = 1.0 - float(result["distance"])
+            return result
+        raise KeyError(
+            "Retrieval result has no similarity-compatible field; "
+            f"available keys={sorted(result.keys())}"
+        )
         
     def retrieve_with_priority_filters(
         self,
@@ -278,6 +303,7 @@ class ContentUtils:
                 limit=k,
                 qdrant_filter=qdrant_filter,
             )
+            formatted = [self._canonicalize_similarity(result) for result in formatted]
 
             docs = [r["text"] for r in formatted]
             metadatas = [r["metadata"] for r in formatted]

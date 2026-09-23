@@ -146,6 +146,8 @@ class QdrantStore:
                     "metadata": metadata,
                     # Qdrant COSINE scores are higher-is-better similarities.
                     "similarity": float(hit.score),
+                    # Kept for callers that still expect the old adapter name.
+                    "distance": 1.0 - float(hit.score),
                 }
             )
         return results
