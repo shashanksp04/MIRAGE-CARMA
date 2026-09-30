@@ -529,6 +529,14 @@ Save this hostname.
 
 Every worker notebook needs it.
 
+To get the service node's internal IP address for worker notebooks, run:
+
+```bash
+ip -4 addr show hsn0 | awk '/inet / {print $2}' | cut -d/ -f1
+```
+
+Use the internal IP address shown by this command in the worker configuration below. Do not use `127.0.0.1`, because that points to the worker notebook's node rather than the shared service node.
+
 ---
 
 # 9. Persistent Service Storage
@@ -1086,9 +1094,19 @@ Every worker must point to the service node.
 Example:
 
 ```python
-COORDINATOR_URL = "http://gpub053.delta.ncsa.illinois.edu:8001"
-QDRANT_URL = "http://gpub053.delta.ncsa.illinois.edu:6333"
+SERVICE_NODE = os.environ.get(
+    "SERVICE_NODE",
+    "<INTERNAL IP>",
+)
+
+QDRANT_URL = f"http://{SERVICE_NODE}:6333"
+COORDINATOR_URL = f"http://{SERVICE_NODE}:8001"
+
+QDRANT_COLLECTION = "mirage_base_database"
+QDRANT_API_KEY: Optional[str] = os.environ.get("QDRANT_API_KEY") or None
 ```
+
+Replace `"<INTERNAL IP>"` with the address returned by the `ip` command, or set the `SERVICE_NODE` environment variable before running the notebook.
 
 You may either:
 

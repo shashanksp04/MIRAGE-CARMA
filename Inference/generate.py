@@ -295,11 +295,7 @@ def rag_worker_process(
             print(f"[RAG Worker] Endpoint {api_base}: Shutting down.")
             break
 
-        if len(request) == 4:
-            item_id, query, location, attempt = request
-        else:
-            item_id, query, attempt = request
-            location = None
+        request_key, item_id, query, location, attempt = request
         request_count += 1
 
         rag_agent.current_location = location
@@ -337,7 +333,7 @@ def rag_worker_process(
 
         try:
             effective_query = crop_enricher.enrich(query)
-            session_id = f"rag_session_{item_id}"
+            session_id = f"rag_session_{item_id}_row_{request_key}_attempt_{attempt}"
             events = loop.run_until_complete(asyncio.wait_for(
                 rag_runner.run_debug(effective_query, session_id=session_id),
                 timeout=rag_timeout_seconds,
@@ -376,6 +372,7 @@ def rag_worker_process(
                 f"evidence={len(rag_result.evidence)} confidence={rag_result.confidence}"
             )
             rag_response_q.put({
+                "request_key": request_key,
                 "item_id": item_id,
                 "status": rag_result.status,
                 "rag_result": rag_result.to_dict(),
@@ -390,6 +387,7 @@ def rag_worker_process(
             error = str(e) or "RAG request timed out"
             print(f"[RAG Worker] Item {item_id}: ✗ Timeout during RAG: {error}")
             rag_response_q.put({
+                "request_key": request_key,
                 "item_id": item_id, "status": status,
                 "rag_result": {"status": status, "error": error},
                 "error": error, "endpoint": api_base,
@@ -399,6 +397,7 @@ def rag_worker_process(
             status = RAG_CONNECTION_ERROR
             print(f"[RAG Worker] Item {item_id}: ✗ Connection failure during RAG: {e}")
             rag_response_q.put({
+                "request_key": request_key,
                 "item_id": item_id, "status": status,
                 "rag_result": {"status": status, "error": str(e)},
                 "error": str(e), "endpoint": api_base,
@@ -408,6 +407,7 @@ def rag_worker_process(
             print(f"[RAG Worker] Item {item_id}: ✗ Exception during RAG: {e}")
             status = _classify_rag_exception(e)
             rag_response_q.put({
+                "request_key": request_key,
                 "item_id": item_id,
                 "status": status,
                 "rag_result": {"status": status, "error": str(e)},
@@ -802,11 +802,14 @@ class Generate:
             pbar.update(1)
 
         while idx < total and not rag_request_q.full():
+            request_key = idx
             item = items[idx]
             idx += 1
             prompt = self.get_prompt(item)
-            pending[item["id"]] = (item, prompt, 1)
-            rag_request_q.put((item["id"], prompt["user"], prompt.get("location"), 1))
+            pending[request_key] = (item, prompt, 1)
+            rag_request_q.put(
+                (request_key, item["id"], prompt["user"], prompt.get("location"), 1)
+            )
 
         completed = 0
 
@@ -830,11 +833,12 @@ class Generate:
                 print("[MAIN] Waiting for RAG responses... workers still alive.", flush=True)
                 continue
 
+            request_key = response["request_key"]
             item_id = response["item_id"]
-            if item_id not in pending:
+            if request_key not in pending:
                 continue
 
-            item, prompt, attempts = pending[item_id]
+            item, prompt, attempts = pending[request_key]
             status = response["status"]
             rag_result = response.get("rag_result") or {}
             rag_error = response.get("error")
@@ -855,15 +859,26 @@ class Generate:
 
             if status in {RAG_TIMEOUT, RAG_CONNECTION_ERROR, RAG_MODEL_SERVICE_ERROR, RAG_WORKER_ERROR}:
                 if attempts < self.max_rag_attempts:
-                    print(f"[MAIN] Item {item_id}: Retrying RAG after {status}...")
-                    pending[item_id] = (item, prompt, attempts + 1)
-                    rag_request_q.put((item_id, prompt["user"], prompt.get("location"), attempts + 1))
+                    print(
+                        f"[MAIN] Item {item_id} (request_key={request_key}): "
+                        f"Retrying RAG after {status}..."
+                    )
+                    pending[request_key] = (item, prompt, attempts + 1)
+                    rag_request_q.put(
+                        (
+                            request_key,
+                            item_id,
+                            prompt["user"],
+                            prompt.get("location"),
+                            attempts + 1,
+                        )
+                    )
                     continue
                 print(f"[MAIN] Item {item_id}: {status} → skipping generation")
                 write(item)
                 pbar.update(1)
                 completed += 1
-                del pending[item_id]
+                del pending[request_key]
                 continue
 
             if status == RAG_SUCCESS:
@@ -880,7 +895,7 @@ class Generate:
                 # original (possibly enriched) query.
                 enhanced = effective_query
 
-            del pending[item_id]
+            del pending[request_key]
 
             panel_hint = prompt.get("panel_hint", "")
             if panel_hint:
@@ -904,11 +919,14 @@ class Generate:
             completed += 1
 
             while idx < total and not rag_request_q.full():
+                request_key = idx
                 item = items[idx]
                 idx += 1
                 prompt = self.get_prompt(item)
-                pending[item["id"]] = (item, prompt, 1)
-                rag_request_q.put((item["id"], prompt["user"], prompt.get("location"), 1))
+                pending[request_key] = (item, prompt, 1)
+                rag_request_q.put(
+                    (request_key, item["id"], prompt["user"], prompt.get("location"), 1)
+                )
 
         pool.close()
         pool.join()
