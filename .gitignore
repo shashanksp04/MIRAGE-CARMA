@@ -1,3 +1,6 @@
 Inference/results/
 Inference/*.txt
 Inference/**/*.txt
+you-com.txt
+__pycache__/
+*.py[cod]

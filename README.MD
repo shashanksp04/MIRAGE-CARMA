@@ -103,6 +103,26 @@ Install **from the repository root** so `pip` resolves paths correctly.
 
 **Pin file.** **`requirements.txt`** is the single consolidated **`package==version`** snapshot for preload tooling, embeddings, Qdrant client/runtime dependencies, **`sglang`/`vllm`**, ADK-era clients, and CUDA-associated wheels (**~346** pins; **`pip`/`setuptools`/`wheel`** are omitted). Refresh from **`pip freeze`** when you recreate a canonical environment (**`Guide.md` §§8.7–8.7.1**).
 
+### You.com API key
+
+Web augmentation reads the You.com credential from the `YOU_API_KEY`
+environment variable. Do not place the credential in Python source or commit it
+to Git. Export it directly for the current shell:
+
+```bash
+export YOU_API_KEY='<your-you.com-api-key>'
+```
+
+Alternatively, keep the export command in a repository-root `you-com.txt` file
+and load it before starting inference:
+
+```bash
+source you-com.txt
+```
+
+The local `you-com.txt` file is intentionally ignored by Git. Restrict it to
+the current user with `chmod 600 you-com.txt`.
+
 ### Optional sanity check
 
 ```bash
