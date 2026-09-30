@@ -1,0 +1,267 @@
+\documentclass[runningheads]{llncs}
+
+\usepackage{graphicx}
+\usepackage{url}
+
+\begin{document}
+
+\title{MIRAGE-CARMA: Context-Adaptive Retrieval with Metadata Awareness for Multimodal Reasoning---An Interactive Agricultural Demonstration}
+\titlerunning{MIRAGE-CARMA: An Interactive Agricultural Demonstration}
+
+% TODO(author): Confirm author order, affiliations, and corresponding-author contact.
+\author{Shashank Singh \and Tushar Gupta \and John F. Reid}
+\authorrunning{S. Singh et al.}
+\institute{University of Illinois Urbana--Champaign, Urbana, IL, USA}
+
+\maketitle
+
+\begin{abstract}
+Agricultural questions grounded in images often cannot be resolved from visual
+content alone: useful advice may depend on crop identity, geographic location,
+season, and region-specific knowledge. We present MIRAGE-CARMA, an operational
+prototype for context-adaptive evidence acquisition and multimodal response
+generation. Given an image, question, and location, an evidence controller can
+enrich the textual query, evaluate several applicable metadata-constrained
+retrieval strategies together with unrestricted semantic retrieval, and select
+the strategy providing the strongest relevant evidence. A confidence-routing
+heuristic can escalate weak retrieval to domain-constrained You.com search;
+acquired pages are ingested into a mutable, run-scoped Qdrant collection and
+retrieved again without modifying the immutable curated collection. The
+retrieved text is then supplied with the original image and question to a
+vision--language model. The demonstration makes this process inspectable: users
+can observe the effective query, strategy diagnostics, evidence provenance and
+similarities, confidence, web-search decisions and URLs, runtime-memory writes,
+and the final multimodal response. It is intended for IR researchers and
+practitioners studying metadata-aware retrieval, adaptive RAG, and auditable
+multimodal systems rather than as a replacement for professional agricultural
+diagnosis.
+\keywords{retrieval-augmented generation \and multimodal retrieval \and
+metadata filtering \and adaptive retrieval \and agriculture}
+\end{abstract}
+
+\noindent\textbf{Demo availability:}
+Live system: \url{DEMO_URL}\quad
+Video: \url{VIDEO_URL}\quad
+Source code: \url{CODE_URL}
+% TODO(artifact): Replace at least DEMO_URL or VIDEO_URL before submission and
+% replace CODE_URL if a public repository/release is made available.
+
+\section{Introduction}
+
+The agricultural MIRAGE benchmark frames assistance as expert-guided,
+multimodal information seeking: a question can be accompanied by one or more
+images and geographic context, while the desired response may require
+identification, explanation, or management guidance~\cite{dongre2025mirage}.
+An image can show visible symptoms, yet whether a recommendation is appropriate
+may also depend on the crop, location, and season. This makes the task a useful
+case for retrieval-augmented generation (RAG), which supplements model
+parameters with inspectable and updateable external evidence~\cite{lewis2020rag}.
+However, a fixed semantic search neither guarantees contextual fit nor provides
+a response when the curated collection is insufficient.
+
+MIRAGE-CARMA (Context-Adaptive Retrieval with Metadata Awareness for
+Multimodal Reasoning) demonstrates an alternative: retrieval is treated as an
+observable, adaptive process preceding multimodal answer generation. Its
+\emph{progressive metadata filtering} evaluates all applicable strategies
+formed from USDA plant hardiness zone, month--year, and title constraints, plus
+unrestricted semantic retrieval, and selects the strongest strategy. This is
+not a sequential fallback: every applicable candidate is evaluated under the
+same selection rule. When
+the selected evidence has low confidence, an evidence controller can search
+external sources, add acquired passages to isolated runtime memory, retrieve
+again, and reevaluate confidence. This corrective pattern is related to
+adaptive and corrective RAG~\cite{asai2024selfrag,yan2024crag}, while the use of
+structured filters connects it to metadata-aware RAG~\cite{poliakov2025multimetarag}.
+
+The demonstration has three purposes: to show how agricultural context changes
+retrieval, to expose why the system escalates beyond its curated knowledge, and
+to make the provenance of the final VLM context inspectable. Its scope is
+textual evidence acquisition for image-conditioned agricultural questions; the
+evidence controller does not inspect the image or retrieve images. The intended
+audience comprises IR researchers interested in metadata and adaptive
+retrieval, multimodal-RAG developers, and agricultural-technology practitioners
+who need to audit where supporting context came from.
+
+\section{MIRAGE-CARMA System}
+
+\paragraph{Inputs and query construction.}
+The user supplies a question, one or more images, and a state or state--county
+location. Location is retained in the effective query and, when resolvable, is
+mapped to a USDA plant hardiness zone---a climate proxy based on average annual
+extreme minimum temperature, not a complete model of local agricultural
+conditions~\cite{usda2023phzm}. An optional crop-enrichment step may insert an
+implicit crop name from a state-specific allowlist. The insertion is accepted
+only if the original question remains a character-level subsequence; otherwise
+the original text is used.
+
+\paragraph{Progressive metadata filtering.}
+Questions and passages are embedded with
+\texttt{BAAI/bge-base-en-v1.5}. For each collection, the retriever constructs
+every strategy supported by the available zone, \texttt{month\_year}, and
+\texttt{title} values, and always includes semantic-only search. Each candidate
+performs cosine search in Qdrant. Strategies with sufficient semantically
+relevant hits are compared using the mean transformed score
+$\frac{1}{n}\sum_i(2-s_i)^{-1}$, where $s_i$ is the raw Qdrant cosine score;
+the maximum-scoring strategy is selected. Thus metadata constrains the search
+space when it helps, while semantic-only retrieval remains a competing
+strategy when metadata is missing or unhelpful.
+
+Retrieval runs independently over two stores. \texttt{mirage\_base\_build} is
+the immutable curated Qdrant collection. A second, mutable Qdrant collection is
+created for the run. The winning result lists from the two collections are
+merged, deduplicated by content hash (with base evidence preferred for a
+duplicate), globally ordered by raw cosine similarity, and truncated to the
+evidence budget. Each passage retains whether it came from the curated or
+runtime collection.
+
+\paragraph{Confidence-aware acquisition and generation.}
+A fixed routing heuristic combines the relevant passages' mean similarity,
+count, score consistency, and the scope of the selected retrieval strategy. It
+is an operational routing score, not a calibrated probability of correctness.
+For low-confidence evidence, the controller is instructed to extract keywords,
+query You.com, optionally constrain the query to location-linked academic
+domains, ingest successfully acquired pages into the runtime collection, and
+repeat retrieval and confidence evaluation. The policy is prompt-directed by a
+tool-using model rather than encoded as a deterministic state machine; the demo
+therefore displays the executed calls as well as the intended route.
+
+The resulting textual passages are concatenated with the effective question
+and sent, together with the user images, to the answer VLM. Runtime evidence can
+be reused by later questions in the same run, but it never mutates the curated
+collection. Figure~\ref{fig:workflow} summarizes the boundary between the two
+stores and the two model roles.
+
+\begin{figure}[t]
+  \centering
+  \fbox{%
+    \begin{minipage}[c][3.65cm][c]{0.94\linewidth}
+      \centering\small
+      \textbf{Question + image(s) + location}
+      $\rightarrow$ \textbf{query enrichment}
+      $\rightarrow$ \textbf{progressive metadata filtering}\\[2mm]
+      \begin{tabular}{c@{\hspace{8mm}}c}
+      \fbox{\parbox{0.34\linewidth}{\centering Immutable curated Qdrant\\
+      \texttt{mirage\_base\_build}}} &
+      \fbox{\parbox{0.34\linewidth}{\centering Mutable run-scoped Qdrant\\
+      retrieved and updated at runtime}}
+      \end{tabular}\\[2mm]
+      $\downarrow$ merge, deduplicate, rank $\downarrow$\\[-1mm]
+      \textbf{confidence evaluation}
+      $\rightarrow$ \emph{if low:} domain-constrained web search
+      $\rightarrow$ runtime ingestion $\rightarrow$ retrieve again\\[1mm]
+      \textbf{retrieval context + original image(s)}
+      $\rightarrow$ \textbf{multimodal answer generation}
+    \end{minipage}}
+  \caption{MIRAGE-CARMA architecture and demonstration workflow. The figure
+  placeholder reserves space for the final graphic. Web-acquired evidence is
+  written only to the mutable run-scoped collection; the curated collection
+  remains immutable.}
+  \label{fig:workflow}
+\end{figure}
+
+\section{Demonstration Experience}
+
+An attendee begins from a prepared agricultural case or supplies a question,
+image, and location. The workspace keeps the input and answer visible while an
+execution trace expands between them. This layout lets a user inspect not only
+the returned response but also how context changed the evidence supplied to the
+VLM. Table~\ref{tab:trace} lists the principal views.
+
+\begin{table}[t]
+\caption{Information exposed during one demonstration run.}
+\label{tab:trace}
+\centering
+\small
+\begin{tabular}{p{0.24\linewidth}p{0.69\linewidth}}
+\hline
+\textbf{View} & \textbf{What the attendee can inspect} \\
+\hline
+Input & Original image(s), question, and location beside the effective or
+crop-enriched query. \\
+Retrieval & Applicable metadata strategies and semantic-only retrieval,
+selected strategy, filters, raw similarities, passage text, provenance, and
+curated/runtime source. \\
+Routing & Confidence score and category, its diagnostics, and whether low
+confidence triggered external acquisition. \\
+Web and memory & Search keywords, You.com result URLs, fetch/ingestion status,
+new runtime passages, and the second retrieval after ingestion. \\
+Generation & The exact retrieved context admitted to generation and the final
+image-conditioned answer. \\
+\hline
+\end{tabular}
+\end{table}
+
+The central interaction is a controlled rerun. A visitor can modify the
+location or question while retaining the image and compare the eligible
+filters, selected strategy, and evidence. They can also inspect an
+augmentation case before and after ingestion: the trace first shows weak or
+insufficient curated evidence, then the external URLs and chunks added to
+runtime memory, and finally the revised retrieval state. A subsequent related
+query demonstrates reuse by identifying passages whose source is the runtime
+collection. The interface distinguishes a configured capability from observed
+behavior: for example, domain filtering being enabled is shown separately from
+the search query and URLs that were actually produced.
+
+The displayed trace is derived from structured retrieval state and live tool
+events rather than from the evidence controller's free-text terminal message.
+This preserves selected-strategy diagnostics and passage-level cosine scores,
+and makes deviations from the prompt-directed acquisition policy visible. The
+answer is presented as evidence-supported model output, not as a field
+diagnosis or treatment prescription.
+% TODO(demo-ui): Confirm that the deployed trace adapter persists and displays
+% all live search URLs, individual ingestion outcomes, and the admitted final
+% context; the batch JSONL summary alone does not retain every tool event.
+
+\section{Implementation and Demonstration Scenarios}
+
+The prototype uses Qdrant server mode for concurrent retrieval and ingestion.
+The live curated and runtime collections use cosine distance; the Qdrant server
+version verified during the research runs is 1.18.0. Payload indexes support
+hardiness zone, month--year, title, and content hash. Web pages are searched
+through You.com, extracted and chunked, deduplicated against both enabled
+collections, embedded, and written only to runtime memory. The research batch
+deployment uses four NVIDIA A40 GPUs at a time, separating evidence-controller
+workers from final response generation. The demonstration retains the same
+service boundaries, although its final public deployment and VLM checkpoint
+must be recorded with the artifact release.
+% TODO(deployment): Record the final public-demo VLM checkpoint, revision,
+% serving configuration, and hardware; exact Qwen-3 assignments are not yet
+% verified and are intentionally absent from this draft.
+
+We will present three complementary scenarios. \emph{Contextual retrieval}
+holds an image/question pair fixed while changing location, revealing how a
+derived hardiness zone alters eligible strategies without making metadata
+mandatory. \emph{Confidence-aware escalation} starts with weak internal
+evidence, displays keyword extraction and domain-constrained search, and shows
+the post-ingestion retrieval. \emph{Runtime reuse} issues a related follow-up
+within the same run and identifies evidence retrieved from the mutable store.
+Together, the scenarios cover the fast path, the adaptive path, and the
+stateful-memory behavior most relevant to an IR audience.
+
+The repository also supports one direct-generation baseline and eight
+configured RAG variants (nine experimental conditions in total). These
+configurations are useful for development and controlled study, but the demo is
+organized around the end-to-end adaptive system rather than an ablation table.
+The final preload corpus and crop-dictionary artifacts are still being
+finalized, so this draft deliberately gives no corpus-size or crop-coverage
+statistics. Likewise, it reports no effectiveness results or exact model
+assignments that have not yet been finalized.
+
+\section{Conclusion}
+
+MIRAGE-CARMA turns adaptive evidence acquisition into the object of the
+demonstration. Attendees can follow contextual inputs through progressive
+metadata filtering, confidence-aware web augmentation, isolated runtime
+memory, and multimodal response generation. The prototype exposes both the
+evidence that supports an answer and the routing decisions that obtained it,
+while keeping live acquisition separate from the immutable curated collection.
+Its present scope is U.S.-oriented agricultural question answering: hardiness
+zones are coarse geographic proxies, live search is time-dependent, and the
+confidence score is heuristic. These constraints also motivate the demo's
+emphasis on inspectability rather than unsupported claims of diagnostic
+authority or finalized empirical gains.
+
+\bibliographystyle{splncs04}
+\bibliography{references}
+
+\end{document}
