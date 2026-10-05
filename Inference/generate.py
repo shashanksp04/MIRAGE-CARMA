@@ -585,17 +585,19 @@ class Generate:
         """Baseline path: no RAG workers, no crop enrichment; prompt is `get_prompt` user string only."""
         ctx = multiprocessing.get_context("spawn")
         num_gpus = _detect_num_gpus()
-        if num_gpus >= self.rag_gpu_count + self.generation_gpu_count:
-            _, generation_endpoints = _split_endpoints(
-                self.openai_api_base,
-                num_gpus,
-                rag_gpu_count=self.rag_gpu_count,
-                generation_gpu_count=self.generation_gpu_count,
-            )
-            generation_endpoint = generation_endpoints[0]
-        else:
-            generation_endpoint = _build_endpoints(self.openai_api_base, max(num_gpus, 1))[0]
-        pool = ctx.Pool(processes=1)
+        # No RAG workers are started for the baseline, so every visible GPU is
+        # available for generation. The project runs one model server per GPU
+        # on consecutive ports; distribute requests across those endpoints.
+        generation_endpoints = _build_endpoints(
+            self.openai_api_base, max(num_gpus, 1)
+        )
+        print(
+            "[Generate] No-RAG generation endpoints: "
+            + ", ".join(generation_endpoints)
+        )
+        # The baseline has no RAG workers competing for accelerator capacity, so
+        # allow the configured number of concurrent requests.
+        pool = ctx.Pool(processes=self.num_processes)
         total = len(items)
         pbar = tqdm(total=total)
 
@@ -607,11 +609,14 @@ class Generate:
             write(item)
             pbar.update(1)
 
-        for item in items:
+        for item_index, item in enumerate(items):
             prompt = self.get_prompt(item)
             item["RAG_status"] = "disabled"
             item["RAG_used"] = False
             item["RAG_endpoint"] = None
+            generation_endpoint = generation_endpoints[
+                item_index % len(generation_endpoints)
+            ]
 
             user_text = prompt["user"]
             panel_hint = prompt.get("panel_hint", "")

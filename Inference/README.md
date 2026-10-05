@@ -22,7 +22,7 @@ Single-concurrency generation worker on GPU 3
 Incremental JSONL output
 ```
 
-The default endpoint mapping is `11434`–`11436` for RAG and `11437` for generation. Configure it with `--rag_gpu_count`, `--generation_gpu_count`, and `--rag_timeout_seconds`. Final generation concurrency is intentionally one request at a time so RAG and generation workloads do not compete for GPU memory or scheduling capacity. `--num_processes` is retained for CLI compatibility; generation uses controlled concurrency.
+The default endpoint mapping for RAG-enabled runs is `11434`–`11436` for RAG and `11437` for generation. Configure it with `--rag_gpu_count`, `--generation_gpu_count`, and `--rag_timeout_seconds`. RAG-enabled runs intentionally generate one response at a time so RAG and generation workloads do not compete for GPU memory or scheduling capacity. No-RAG baseline runs use `--num_processes` concurrent request workers and distribute items round-robin across every detected per-GPU endpoint (`11434` onward), because no RAG workers occupy those GPUs.
 
 RAG outcomes are mutually exclusive:
 
