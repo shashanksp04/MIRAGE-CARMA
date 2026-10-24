@@ -1,7 +1,12 @@
-import pysqlite3
 import sys
 
-sys.modules["sqlite3"] = pysqlite3
+try:
+    import pysqlite3
+    sys.modules["sqlite3"] = pysqlite3
+except ImportError:
+    # The production environment uses pysqlite3; keep lightweight helpers and
+    # local tests importable when only the standard sqlite module is installed.
+    pass
 sys.path.append("../")
 
 from chat_models.OpenAI_Chat import OpenAI_Chat
@@ -28,6 +33,53 @@ from rag_agent.utils.rag_state import (
     RAG_TIMEOUT,
     RAG_WORKER_ERROR,
 )
+
+
+def _question_type(item, explicit_mode="auto"):
+    """Use authoritative metadata or an explicit split mode; never infer from text."""
+    value = item.get("question_type", item.get("task_type", item.get("type")))
+    value = str(value or "").strip().lower()
+    if value in {"identification", "id"}:
+        return "identification"
+    if value in {"management", "mg"}:
+        return "management"
+    return explicit_mode if explicit_mode in {"identification", "management"} else "unknown"
+
+
+def build_retrieval_query(base_query, attributes):
+    if not attributes:
+        return base_query
+    return (f"{base_query}\n\n[Visual observations for evidence retrieval only; "
+            f"not verified identification]\n{attributes}\n[/Visual observations]")
+
+
+def _cache_read(cache_dir, key):
+    if not cache_dir or not key:
+        return None
+    try:
+        with (Path(cache_dir) / f"{key}.json").open(encoding="utf-8") as handle:
+            value = json.load(handle)
+        return value if isinstance(value, dict) and value.get("attributes") else None
+    except (OSError, ValueError, TypeError):
+        return None
+
+
+def _cache_write(cache_dir, key, value):
+    if not cache_dir or not key or not value:
+        return
+    directory = Path(cache_dir)
+    directory.mkdir(parents=True, exist_ok=True)
+    target = directory / f"{key}.json"
+    temporary = directory / f".{key}.{os.getpid()}.tmp"
+    try:
+        with temporary.open("w", encoding="utf-8") as handle:
+            json.dump(value, handle, ensure_ascii=False)
+        os.replace(temporary, target)
+    except OSError:
+        try:
+            temporary.unlink(missing_ok=True)
+        except OSError:
+            pass
 
 
 # ============================================================
@@ -223,10 +275,19 @@ def rag_worker_process(
     use_base_collection: bool,
     runtime_collection: str,
     rag_timeout_seconds: int,
+    enable_visual_attribute_extraction: bool = False,
+    visual_extraction_timeout: float = 45,
+    prefer_non_semantic_retrieval: bool = False,
+    non_semantic_retrieval_max_score_gap: float = 0.01,
 ):
     import asyncio
+    os.environ["MIRAGE_PREFER_NON_SEMANTIC_RETRIEVAL"] = str(prefer_non_semantic_retrieval)
+    os.environ["MIRAGE_NON_SEMANTIC_RETRIEVAL_MAX_SCORE_GAP"] = str(
+        non_semantic_retrieval_max_score_gap
+    )
     from rag_agent.main import MainAgent
     from rag_agent.crop_query_enrichment import CropQueryEnricher
+    from Inference.visual_attribute_extractor import VisualAttributeExtractor
 
     print(f"[RAG Worker] Starting worker for endpoint: {api_base} (ablation_id={ablation_id})")
 
@@ -272,6 +333,10 @@ def rag_worker_process(
             dictionary=dict_data,
             enabled=bool(enable_query_enrichment and dict_data is not None),
         )
+        visual_extractor = (
+            VisualAttributeExtractor(api_base, test_model, visual_extraction_timeout)
+            if enable_visual_attribute_extraction else None
+        )
 
         rag_status_q.put(("READY", api_base))
 
@@ -295,7 +360,18 @@ def rag_worker_process(
             print(f"[RAG Worker] Endpoint {api_base}: Shutting down.")
             break
 
-        request_key, item_id, query, location, attempt = request
+        if isinstance(request, dict):
+            request_key = request["request_key"]
+            item_id = request["item_id"]
+            query = request["original_query"]
+            location = request.get("location")
+            attempt = request.get("attempt", 1)
+            images = request.get("images") or []
+            question_type = request.get("question_type", "unknown")
+            cached_visual = request.get("cached_visual_attributes")
+        else:
+            request_key, item_id, query, location, attempt = request
+            images, question_type, cached_visual = [], "unknown", None
         request_count += 1
 
         rag_agent.current_location = location
@@ -331,11 +407,30 @@ def rag_worker_process(
         #         rag_response_q.put((item_id, None, str(e), False, api_base, attempt, query))
         #         continue
 
+        effective_query = query
+        retrieval_query = query
+        visual_attributes = ""
+        visual_status = "skipped"
+        visual_error = None
+        visual_latency = 0
         try:
+            if enable_visual_attribute_extraction and question_type == "identification":
+                if cached_visual:
+                    visual_attributes = str(cached_visual)
+                    visual_status = "cached"
+                elif visual_extractor:
+                    extraction = visual_extractor.extract(images, query)
+                    visual_attributes = extraction.attributes
+                    visual_status = extraction.status
+                    visual_error = extraction.error
+                    visual_latency = extraction.latency_ms
+                    if extraction.status == "failed":
+                        print(f"[RAG Worker] Item {item_id}: visual extraction failed; continuing text-only RAG: {visual_error}")
             effective_query = crop_enricher.enrich(query)
+            retrieval_query = build_retrieval_query(effective_query, visual_attributes)
             session_id = f"rag_session_{item_id}_row_{request_key}_attempt_{attempt}"
             events = loop.run_until_complete(asyncio.wait_for(
-                rag_runner.run_debug(effective_query, session_id=session_id),
+                rag_runner.run_debug(retrieval_query, session_id=session_id),
                 timeout=rag_timeout_seconds,
             ))
 
@@ -380,6 +475,15 @@ def rag_worker_process(
                 "endpoint": api_base,
                 "attempt": attempt,
                 "effective_query": effective_query,
+                "generation_query": effective_query,
+                "retrieval_query": retrieval_query,
+                "visual_attributes": visual_attributes,
+                "visual_extraction_status": visual_status,
+                "visual_extraction_error": visual_error,
+                "visual_extraction_latency_ms": visual_latency,
+                "visual_extraction_model": test_model,
+                "visual_extraction_prompt_version": "visual-attributes-v1",
+                "image_count": len(images),
             })
 
         except asyncio.TimeoutError as e:
@@ -392,6 +496,11 @@ def rag_worker_process(
                 "rag_result": {"status": status, "error": error},
                 "error": error, "endpoint": api_base,
                 "attempt": attempt, "effective_query": effective_query,
+                "generation_query": effective_query, "retrieval_query": retrieval_query,
+                "visual_attributes": visual_attributes, "visual_extraction_status": visual_status,
+                "visual_extraction_error": visual_error, "visual_extraction_latency_ms": visual_latency,
+                "visual_extraction_model": test_model, "visual_extraction_prompt_version": "visual-attributes-v1",
+                "image_count": len(images),
             })
         except (ConnectionError, OSError) as e:
             status = RAG_CONNECTION_ERROR
@@ -402,6 +511,11 @@ def rag_worker_process(
                 "rag_result": {"status": status, "error": str(e)},
                 "error": str(e), "endpoint": api_base,
                 "attempt": attempt, "effective_query": effective_query,
+                "generation_query": effective_query, "retrieval_query": retrieval_query,
+                "visual_attributes": visual_attributes, "visual_extraction_status": visual_status,
+                "visual_extraction_error": visual_error, "visual_extraction_latency_ms": visual_latency,
+                "visual_extraction_model": test_model, "visual_extraction_prompt_version": "visual-attributes-v1",
+                "image_count": len(images),
             })
         except Exception as e:
             print(f"[RAG Worker] Item {item_id}: ✗ Exception during RAG: {e}")
@@ -415,6 +529,11 @@ def rag_worker_process(
                 "endpoint": api_base,
                 "attempt": attempt,
                 "effective_query": effective_query,
+                "generation_query": effective_query, "retrieval_query": retrieval_query,
+                "visual_attributes": visual_attributes, "visual_extraction_status": visual_status,
+                "visual_extraction_error": visual_error, "visual_extraction_latency_ms": visual_latency,
+                "visual_extraction_model": test_model, "visual_extraction_prompt_version": "visual-attributes-v1",
+                "image_count": len(images),
             })
 
 
@@ -482,7 +601,13 @@ class Generate:
                  snapshot_runtime: bool = False,
                  rag_gpu_count: int = 3,
                  generation_gpu_count: int = 1,
-                 rag_timeout_seconds: int = 600):
+                 rag_timeout_seconds: int = 600,
+                 enable_visual_attribute_extraction: bool = False,
+                 visual_extraction_timeout: float = 45,
+                 visual_extraction_cache_dir: Optional[str] = None,
+                 question_type_mode: str = "auto",
+                 prefer_non_semantic_retrieval: bool = False,
+                 non_semantic_retrieval_max_score_gap: float = 0.01):
 
         self.raw_data_file = raw_data_file
         self.output_file = output_file
@@ -512,6 +637,15 @@ class Generate:
         self.rag_gpu_count = int(rag_gpu_count)
         self.generation_gpu_count = int(generation_gpu_count)
         self.rag_timeout_seconds = int(rag_timeout_seconds)
+        self.enable_visual_attribute_extraction = bool(enable_visual_attribute_extraction) and not no_rag
+        self.visual_extraction_timeout = float(visual_extraction_timeout)
+        self.visual_extraction_cache_dir = visual_extraction_cache_dir or (
+            str(Path(output_file).resolve().parent / "visual_attribute_cache")
+            if self.enable_visual_attribute_extraction else None
+        )
+        self.question_type_mode = question_type_mode
+        self.prefer_non_semantic_retrieval = bool(prefer_non_semantic_retrieval)
+        self.non_semantic_retrieval_max_score_gap = float(non_semantic_retrieval_max_score_gap)
         self.database_manager = None
 
         self.max_retries = 5
@@ -735,6 +869,10 @@ class Generate:
                 self.use_base_collection,
                 active_runtime_collection,
                 self.rag_timeout_seconds,
+                self.enable_visual_attribute_extraction,
+                self.visual_extraction_timeout,
+                self.prefer_non_semantic_retrieval,
+                self.non_semantic_retrieval_max_score_gap,
             ),
         )
         p0.start()
@@ -767,6 +905,10 @@ class Generate:
                     self.use_base_collection,
                     active_runtime_collection,
                     self.rag_timeout_seconds,
+                    self.enable_visual_attribute_extraction,
+                    self.visual_extraction_timeout,
+                    self.prefer_non_semantic_retrieval,
+                    self.non_semantic_retrieval_max_score_gap,
                 ),
             )
             p.start()
@@ -811,10 +953,17 @@ class Generate:
             item = items[idx]
             idx += 1
             prompt = self.get_prompt(item)
-            pending[request_key] = (item, prompt, 1)
-            rag_request_q.put(
-                (request_key, item["id"], prompt["user"], prompt.get("location"), 1)
-            )
+            qtype = _question_type(item, self.question_type_mode)
+            from Inference.visual_attribute_extractor import image_cache_key
+            cache_key = image_cache_key(prompt["images"], self.test_model, self.visual_extraction_timeout)
+            cached = _cache_read(self.visual_extraction_cache_dir, cache_key) if self.enable_visual_attribute_extraction else None
+            pending[request_key] = (item, prompt, 1, qtype, cache_key, cached)
+            rag_request_q.put({
+                "request_key": request_key, "item_id": item["id"],
+                "original_query": prompt["user"], "location": prompt.get("location"),
+                "images": prompt["images"], "question_type": qtype, "attempt": 1,
+                "cached_visual_attributes": (cached or {}).get("attributes") if cached else None,
+            })
 
         completed = 0
 
@@ -843,13 +992,32 @@ class Generate:
             if request_key not in pending:
                 continue
 
-            item, prompt, attempts = pending[request_key]
+            item, prompt, attempts, qtype, cache_key, cached = pending[request_key]
             status = response["status"]
             rag_result = response.get("rag_result") or {}
             rag_error = response.get("error")
             endpoint = response.get("endpoint")
             attempt = response.get("attempt", attempts)
-            effective_query = response.get("effective_query", prompt["user"])
+            generation_query = response.get("generation_query", response.get("effective_query", prompt["user"]))
+            retrieval_query = response.get("retrieval_query", generation_query)
+            visual_attributes = response.get("visual_attributes", "")
+            visual_status = response.get("visual_extraction_status", "skipped")
+            if visual_status == "success" and visual_attributes:
+                _cache_write(self.visual_extraction_cache_dir, cache_key, {
+                    "attributes": visual_attributes,
+                    "model": self.test_model,
+                    "prompt_version": "visual-attributes-v1",
+                })
+            item["visual_extraction_enabled"] = self.enable_visual_attribute_extraction
+            item["visual_extraction_status"] = visual_status
+            item["visual_attributes"] = visual_attributes
+            item["visual_extraction_error"] = response.get("visual_extraction_error")
+            item["visual_extraction_latency_ms"] = response.get("visual_extraction_latency_ms", 0)
+            item["visual_extraction_model"] = response.get("visual_extraction_model", self.test_model)
+            item["visual_extraction_prompt_version"] = response.get("visual_extraction_prompt_version", "visual-attributes-v1")
+            item["visual_extraction_image_count"] = response.get("image_count", len(prompt["images"]))
+            item["RAG_generation_query"] = generation_query
+            item["RAG_retrieval_query"] = retrieval_query
             item["RAG_endpoint"] = endpoint
             item["RAG_attempt"] = attempt
             item["RAG_status"] = status
@@ -868,16 +1036,14 @@ class Generate:
                         f"[MAIN] Item {item_id} (request_key={request_key}): "
                         f"Retrying RAG after {status}..."
                     )
-                    pending[request_key] = (item, prompt, attempts + 1)
-                    rag_request_q.put(
-                        (
-                            request_key,
-                            item_id,
-                            prompt["user"],
-                            prompt.get("location"),
-                            attempts + 1,
-                        )
-                    )
+                    pending[request_key] = (item, prompt, attempts + 1, qtype, cache_key, cached)
+                    rag_request_q.put({
+                        "request_key": request_key, "item_id": item_id,
+                        "original_query": prompt["user"], "location": prompt.get("location"),
+                        "images": prompt["images"], "question_type": qtype,
+                        "attempt": attempts + 1,
+                        "cached_visual_attributes": visual_attributes or (cached or {}).get("attributes") if cached else visual_attributes,
+                    })
                     continue
                 print(f"[MAIN] Item {item_id}: {status} → skipping generation")
                 write(item)
@@ -893,12 +1059,12 @@ class Generate:
                     for chunk in evidence
                     if chunk.get("text")
                 )
-                enhanced = effective_query + "\n\nadditional context:\n\n" + context
+                enhanced = generation_query + "\n\nadditional context:\n\n" + context
             else:
                 # Insufficient evidence and invalid structured output are valid
                 # completed RAG outcomes; benchmark generation falls back to the
                 # original (possibly enriched) query.
-                enhanced = effective_query
+                enhanced = generation_query
 
             del pending[request_key]
 
@@ -928,10 +1094,17 @@ class Generate:
                 item = items[idx]
                 idx += 1
                 prompt = self.get_prompt(item)
-                pending[request_key] = (item, prompt, 1)
-                rag_request_q.put(
-                    (request_key, item["id"], prompt["user"], prompt.get("location"), 1)
-                )
+                qtype = _question_type(item, self.question_type_mode)
+                from Inference.visual_attribute_extractor import image_cache_key
+                cache_key = image_cache_key(prompt["images"], self.test_model, self.visual_extraction_timeout)
+                cached = _cache_read(self.visual_extraction_cache_dir, cache_key) if self.enable_visual_attribute_extraction else None
+                pending[request_key] = (item, prompt, 1, qtype, cache_key, cached)
+                rag_request_q.put({
+                    "request_key": request_key, "item_id": item["id"],
+                    "original_query": prompt["user"], "location": prompt.get("location"),
+                    "images": prompt["images"], "question_type": qtype, "attempt": 1,
+                    "cached_visual_attributes": (cached or {}).get("attributes") if cached else None,
+                })
 
         pool.close()
         pool.join()
@@ -958,6 +1131,24 @@ if __name__ == "__main__":
     parser.add_argument("--rag_gpu_count", type=int, default=3)
     parser.add_argument("--generation_gpu_count", type=int, default=1)
     parser.add_argument("--rag_timeout_seconds", type=int, default=600)
+    parser.add_argument(
+        "--enable_visual_attribute_extraction", action="store_true",
+        help="Opt-in worker-local visual observations for identification retrieval only.",
+    )
+    parser.add_argument("--visual_extraction_timeout", type=float, default=45)
+    parser.add_argument("--visual_extraction_cache_dir", default=None)
+    parser.add_argument(
+        "--question_type_mode", choices=("auto", "identification", "management"), default="auto",
+        help="Explicit split label when records do not carry question_type; auto skips unknown items.",
+    )
+    parser.add_argument(
+        "--prefer_non_semantic_retrieval", action="store_true",
+        help="Prefer a valid metadata-filter strategy when its score is within the configured gap of semantic retrieval.",
+    )
+    parser.add_argument(
+        "--non_semantic_retrieval_max_score_gap", type=float, default=0.01,
+        help="Maximum semantic-minus-non-semantic normalized-score gap for preferring the non-semantic strategy.",
+    )
     parser.add_argument("--embed_model_name", default="BAAI/bge-base-en-v1.5")
     parser.add_argument("--test_model", default="Qwen2.5-VL-3B-Instruct")
     parser.add_argument("--device", default="None")
@@ -1034,6 +1225,12 @@ if __name__ == "__main__":
         rag_gpu_count=args.rag_gpu_count,
         generation_gpu_count=args.generation_gpu_count,
         rag_timeout_seconds=args.rag_timeout_seconds,
+        enable_visual_attribute_extraction=args.enable_visual_attribute_extraction,
+        visual_extraction_timeout=args.visual_extraction_timeout,
+        visual_extraction_cache_dir=args.visual_extraction_cache_dir,
+        question_type_mode=args.question_type_mode,
+        prefer_non_semantic_retrieval=args.prefer_non_semantic_retrieval,
+        non_semantic_retrieval_max_score_gap=args.non_semantic_retrieval_max_score_gap,
     )
 
     generator.generate()

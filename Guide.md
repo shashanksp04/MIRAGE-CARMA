@@ -261,6 +261,17 @@ The current transformed strategy score selects **B**, while raw mean scoring wou
    over valid strategies, breaking ties by Python’s `max` ordering on the list (deterministic given fixed evaluation order).
 4. Return the `**where` clause**, **strategy name**, and **formatted hit list** from that winner. If none are valid, return `("no_results", [])` with no filter.
 
+The optional runtime selection policy in `Inference/bash_generate.sh` can change
+only step 3; it does not change retrieval queries, eligibility, or score
+calculation. Set `PREFER_NON_SEMANTIC_RETRIEVAL="true"` to enable it and edit
+`NON_SEMANTIC_RETRIEVAL_MAX_SCORE_GAP` to set the allowed score gap (default
+`0.01`). When enabled, the best valid non-semantic strategy is selected when
+its `normalized_score` is higher than semantic retrieval or is within that gap
+of the semantic score. If the gap is larger, `semantic_only` is selected; if
+no non-semantic strategy is valid, the valid semantic strategy is used. If the
+toggle is `false`, the highest-scoring valid strategy remains the winner.
+This is a runtime retrieval preference, not an ablation setting.
+
 **Parameters.**
 
 
@@ -268,6 +279,8 @@ The current transformed strategy score selects **B**, while raw mean scoring wou
 | ------------- | ----------------------------------------------------------------------------------------- |
 | `k`           | Top-k hits per strategy (`limit` in Qdrant / `k` in code).                                          |
 | `min_results` | Minimum semantically relevant chunk count for a strategy to participate in selection (default 2). |
+| `PREFER_NON_SEMANTIC_RETRIEVAL` | Runtime toggle for preferring metadata-filter strategies when their score is within the configured gap of semantic retrieval; off preserves highest-score selection. |
+| `NON_SEMANTIC_RETRIEVAL_MAX_SCORE_GAP` | Maximum `semantic_score - non_semantic_score` gap for selecting the non-semantic strategy (default `0.01`). |
 
 
 **Why this design.** Stricter metadata filters shrink the corpus; if that subset has weak embedding matches, a **looser** filter (or `semantic_only`) can still win on **average similarity**, keeping retrieval grounded in vector relevance while using metadata when it helps.
@@ -396,6 +409,30 @@ bash bash_generate.sh
 ```
 
 Input-image combining is a standalone generation option and is not part of the ablation framework. The CLI flag `--combine_input_images` accepts `true`/`false` (as well as `1`/`0`, `yes`/`no`, and `on`/`off`) and defaults to `false`. The wrapper exposes the same setting through `COMBINE_INPUT_IMAGES` in `Inference/bash_generate.sh`. Leave it disabled for models that can consume multiple images directly; enable it only when a model benefits from one labeled panel image. When enabled, the pipeline combines up to the first three valid images and adds panel-label guidance to the final generation prompt.
+
+#### Optional visual-attribute extraction
+
+`Inference/generate.py` also supports an opt-in visual observation step for
+identification questions. Enable it with
+`--enable_visual_attribute_extraction`. Each RAG worker sends up to three input
+images to its OpenAI-compatible multimodal endpoint and asks for concise,
+directly visible characteristics such as color, shape, markings, anatomy, or
+visible plant damage. The extractor must not identify the organism, diagnose a
+condition, recommend treatment, or invent unseen details.
+
+The extracted observations are used only to enrich the RAG retrieval query;
+the generation query remains the original crop-enriched question. Records
+include the extraction status, attributes, latency, model, prompt version, and
+image count, along with separate `RAG_generation_query` and
+`RAG_retrieval_query` fields. Successful extractions are cached under
+`visual_attribute_cache` beside the output file; use
+`--visual_extraction_cache_dir` to choose another location and
+`--visual_extraction_timeout` to change the request timeout. Missing images,
+timeouts, invalid output, or unsafe identity/treatment claims fail closed and
+continue with text-only retrieval. The feature is disabled by default and is
+not an ablation setting. Question routing uses record metadata
+(`question_type`, `task_type`, or `type`); use `--question_type_mode` only when
+the dataset needs an explicit identification or management fallback.
 
 ### 3.1 Serving LLM backends (OpenAI-compatible API)
 

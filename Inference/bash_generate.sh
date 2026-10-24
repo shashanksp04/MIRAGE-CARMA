@@ -34,6 +34,10 @@ RAG_GPU_COUNT=3
 GENERATION_GPU_COUNT=1
 RAG_TIMEOUT_SECONDS=600
 
+# Optional retrieval selection policy; score calculation is unchanged.
+PREFER_NON_SEMANTIC_RETRIEVAL="false"
+NON_SEMANTIC_RETRIEVAL_MAX_SCORE_GAP="0.009"
+
 EMBED_MODEL_NAME="BAAI/bge-base-en-v1.5"
 TEST_MODEL="meta-llama/Llama-3.2-11B-Vision-Instruct"
 DEVICE="None"
@@ -67,7 +71,12 @@ OUTPUT_DIR="results/${BENCH_TYPE}_benchmark"
 mkdir -p "$OUTPUT_DIR"
 
 OUTPUT_FILE="${OUTPUT_DIR}/${MODEL_NAME_CLEANED}.json"
-export QDRANT_URL
+export QDRANT_URL YOU_API_KEY
+
+RETRIEVAL_SELECTION_ARGS=()
+if [ "$PREFER_NON_SEMANTIC_RETRIEVAL" = "true" ]; then
+    RETRIEVAL_SELECTION_ARGS+=(--prefer_non_semantic_retrieval)
+fi
 
 # Run Python script
 python generate.py \
@@ -87,7 +96,9 @@ python generate.py \
     --use_base_collection "$USE_BASE_COLLECTION" \
     --runtime_mode "$RUNTIME_MODE" \
     --ablation_id "$ABLATION_ID" \
+    --non_semantic_retrieval_max_score_gap "$NON_SEMANTIC_RETRIEVAL_MAX_SCORE_GAP" \
     "${QUERY_ENRICHMENT_ARGS[@]}" \
+    "${RETRIEVAL_SELECTION_ARGS[@]}" \
     $(if [ "$SNAPSHOT_RUNTIME" = "true" ]; then echo "--snapshot_runtime"; fi)
 # -- allowed_states California "New York" Texas
 

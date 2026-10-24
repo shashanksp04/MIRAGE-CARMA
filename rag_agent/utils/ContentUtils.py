@@ -1,4 +1,5 @@
 from typing import Any, List, Dict, Optional, Tuple, TYPE_CHECKING
+import os
 import re
 import hashlib
 import statistics
@@ -391,7 +392,7 @@ class ContentUtils:
             )
 
         if valid_strategies:
-            best_strategy = max(valid_strategies, key=lambda s: s["normalized_score"])
+            best_strategy = self._select_strategy(valid_strategies)
             return RetrievalResult(
                 query=query,
                 used_filter=best_strategy["where_filter"],
@@ -411,3 +412,35 @@ class ContentUtils:
             strategy_diagnostics=strategy_evaluations,
             query_embedding=query_embedding,
         )
+
+    @staticmethod
+    def _select_strategy(valid_strategies: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """Select retrieval data without changing candidate score calculations."""
+        best_overall = max(valid_strategies, key=lambda s: s["normalized_score"])
+        prefer_non_semantic = os.getenv(
+            "MIRAGE_PREFER_NON_SEMANTIC_RETRIEVAL", "false"
+        ).strip().lower() in {"1", "true", "yes", "on"}
+        if not prefer_non_semantic:
+            return best_overall
+
+        try:
+            max_score_gap = max(0.0, float(os.getenv(
+                "MIRAGE_NON_SEMANTIC_RETRIEVAL_MAX_SCORE_GAP", "0.01"
+            )))
+        except (TypeError, ValueError):
+            max_score_gap = 0.01
+
+        semantic = [s for s in valid_strategies if s["strategy_name"] == "semantic_only"]
+        non_semantic = [s for s in valid_strategies if s["strategy_name"] != "semantic_only"]
+        if not non_semantic:
+            return best_overall
+
+        best_non_semantic = max(non_semantic, key=lambda s: s["normalized_score"])
+        if not semantic:
+            return best_non_semantic
+
+        best_semantic = max(semantic, key=lambda s: s["normalized_score"])
+        score_gap = best_semantic["normalized_score"] - best_non_semantic["normalized_score"]
+        if score_gap <= max_score_gap:
+            return best_non_semantic
+        return best_semantic

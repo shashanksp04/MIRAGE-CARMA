@@ -171,6 +171,19 @@ Use the exact ablation key from `rag_agent/ablation_configs.json`, for example `
 
 Input-image combining is controlled independently from ablations. It is disabled by default; enable it for a model or run that benefits from receiving one labeled panel image by adding `--combine_input_images true` to the direct command. In `Inference/bash_generate.sh`, set `COMBINE_INPUT_IMAGES="true"` or `"false"`. When disabled, valid input images are sent individually; when enabled, up to the first three images are combined and labeled as separate panels.
 
+Optional visual-attribute extraction can be enabled with
+`--enable_visual_attribute_extraction` for identification questions. It sends
+up to three images per item to the worker’s multimodal endpoint and produces
+short, searchable descriptions of visible traits only. These observations are
+added to the retrieval query, not the final generation query, and the model is
+explicitly prevented from making species, diagnosis, or treatment claims.
+Extraction is disabled by default, cached beside the output under
+`visual_attribute_cache`, and falls back to text-only retrieval on missing
+images, timeout, invalid output, or unsafe claims. Configure it with
+`--visual_extraction_timeout`, `--visual_extraction_cache_dir`, and
+`--question_type_mode`; it is independent of and not represented as an
+ablation.
+
 Batch inference (`Inference/generate.py`) coordinates RAG and generation across multiple workers and endpoints.
 
 - Reads input JSON and skips already successful items in output JSONL.
@@ -247,6 +260,16 @@ Retrieval in `ContentUtils.retrieve_with_priority_filters` evaluates a ladder of
 - Each strategy runs a query and is scored by the mean of transformed raw Qdrant cosine similarities across top-k hits (`1 / (2 - q)`).
 - Best valid strategy is selected by score, not just first-hit order.
 - Semantic-only retrieval remains the safety fallback.
+
+The selection policy is configurable independently of ablations in
+`Inference/bash_generate.sh`. With `PREFER_NON_SEMANTIC_RETRIEVAL="false"`
+(the default), the highest-scoring valid strategy is selected. When enabled,
+the best valid metadata-filter strategy is selected when its existing
+`normalized_score` is higher than semantic retrieval or is within
+`NON_SEMANTIC_RETRIEVAL_MAX_SCORE_GAP` (default `0.01`) of the semantic score;
+otherwise `semantic_only` is selected when it is valid. This changes only
+which already-evaluated result set is returned—score calculations and
+retrieval eligibility are unchanged—and it is not treated as a new ablation.
 
 ### Hardiness Zone, Time, and Title Filters
 
