@@ -4,3 +4,7 @@ Inference/**/*.txt
 you-com.txt
 __pycache__/
 *.py[cod]
+
+MSCdocs/
+paper/
+Pictures/
