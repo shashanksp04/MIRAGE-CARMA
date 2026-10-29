@@ -288,6 +288,7 @@ class ContentUtils:
             ]
 
         strategy_evaluations: List[Dict[str, Any]] = []
+        from .observation import emit, observing
 
         query = self.normalize_query(query)
         if self.embedding_fn is None:
@@ -362,6 +363,16 @@ class ContentUtils:
                     "normalized_score": normalized_score,
                 }
             )
+            if observing():
+                diagnostic = {key: value for key, value in strategy_evaluations[-1].items()
+                              if key not in {"docs", "metadatas", "formatted_results", "relevant_results"}}
+                diagnostic.update(
+                    collection=getattr(store, "collection_name", None),
+                    eligible=len(relevant_results) >= min_results,
+                    reason="valid_retrieval" if len(relevant_results) >= min_results else (
+                        "no_results" if not formatted else "insufficient_relevant_results"),
+                )
+                emit("strategy_evaluated", "retrieval", diagnostic)
 
         valid_strategies = [
             s for s in strategy_evaluations
@@ -393,6 +404,13 @@ class ContentUtils:
 
         if valid_strategies:
             best_strategy = self._select_strategy(valid_strategies)
+            if observing():
+                emit("strategy_selected", "retrieval", {
+                    "collection": getattr(store, "collection_name", None),
+                    "strategy": best_strategy["strategy_name"],
+                    "normalized_score": best_strategy["normalized_score"],
+                    "used_filter": best_strategy["where_filter"],
+                })
             return RetrievalResult(
                 query=query,
                 used_filter=best_strategy["where_filter"],

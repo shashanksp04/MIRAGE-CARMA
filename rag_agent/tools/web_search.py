@@ -110,6 +110,13 @@ class WebSearch:
             "query": search_query,
             "count": results_to_extract_count,
         }
+        from rag_agent.utils.observation import emit, observing
+        if observing():
+            emit("web_search_query_prepared", "web_search", {
+                "query": search_query,
+                "allowed_domains": filtered_domains[:6],
+                "domain_filter_enabled": use_domain_filter,
+            })
 
         # 📤 Headers
         headers = {

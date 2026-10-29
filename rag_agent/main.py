@@ -26,6 +26,7 @@ from google.adk.agents import LlmAgent
 from google.adk.runners import InMemoryRunner
 from google.adk.models.lite_llm import LiteLlm
 from typing import Optional, Dict, List, Any
+from .utils.observation import observe_tool, emit, observing
 
 
 class MainAgent:
@@ -319,6 +320,7 @@ class MainAgent:
             retrieval_state=retrieval.to_tool_dict(),
         )
     
+    @observe_tool("retrieval")
     def _tracked_retrieve_content(
         self,
         *,
@@ -410,6 +412,7 @@ class MainAgent:
 
         print(f"[RAG reload] Rebinding complete", flush=True)
         
+    @observe_tool("confidence")
     def _tracked_evaluate_confidence(self, *, query: str, location: Optional[str] = None,
                                       month_year: Optional[str] = None, title: Optional[str] = None, k: int = 5,
                                       use_progressive_filtering: Optional[bool] = None) -> Dict:
@@ -447,6 +450,7 @@ class MainAgent:
             print(f"[RAG Tools] ✗ evaluate_retrieval_confidence: FAILED - {result.get('error_message', 'Unknown error')}", flush=True)
         return result
     
+    @observe_tool("web_search")
     def _tracked_web_search(
         self,
         *,
@@ -492,6 +496,7 @@ class MainAgent:
             print(f"[RAG Tools] ✗ web_search: FAILED - {result.get('error_message', 'Unknown error')}", flush=True)
         return result
     
+    @observe_tool("ingestion")
     def _tracked_add_web_content(self, *, url: str, location: Optional[str] = None,
                                  month_year: Optional[str] = None, language: str = "en") -> Dict:
         """Wrapper around add_web_content that prints success/failure"""
@@ -505,6 +510,11 @@ class MainAgent:
                 month_year=month_year, language=language)
         self.request_state.web_content_ingested += int(result.get("chunks_added", 0) or 0)
         after = self.client.count(collection_name=self.collection_name).count
+        if observing():
+            emit("runtime_count_updated", "database", {
+                "collection": self.collection_name, "before": before,
+                "after": after, "delta": after - before,
+            })
         print(f"[RAG Tools] add_web_content: count delta={after-before} (before={before}, after={after})", flush=True)
         status = result.get("status", "unknown")
         if status == "success":
@@ -513,6 +523,7 @@ class MainAgent:
             print(f"[RAG Tools] ✗ add_web_content: FAILED - {result.get('error_message', 'Unknown error')}")
         return result
     
+    @observe_tool("ingestion")
     def _tracked_add_pdf_content(
         self,
         *,
@@ -540,6 +551,7 @@ class MainAgent:
             print(f"[RAG Tools] ✗ add_pdf_content: FAILED - {result.get('error_message', 'Unknown error')}")
         return result
     
+    @observe_tool("keyword_extraction")
     def _tracked_extract_keywords(self, *, query: str) -> Dict:
         """Extracts search-optimized keywords from a query.
         

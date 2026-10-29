@@ -1,0 +1,30 @@
+{
+  "status": "starter_catalog",
+  "note": "Editable starter questions. Conference scenarios and image assets have not yet been validated; the actual execution path depends on available evidence.",
+  "examples": [
+    {
+      "id": "management-knowledge",
+      "title": "Corn planting guidance",
+      "description": "Explore agricultural knowledge retrieval with a management question.",
+      "validated": false,
+      "image_required": false,
+      "input": {"question": "What soil conditions and planting depth should I consider when planting corn?", "task_type": "management", "state": "Illinois", "county": "Champaign", "month_year": "2026-04"}
+    },
+    {
+      "id": "management-local-context",
+      "title": "A field management decision",
+      "description": "Explore how location and time inform evidence retrieval and, when invoked, web augmentation.",
+      "validated": false,
+      "image_required": false,
+      "input": {"question": "What evidence-based options should I consider for managing corn rootworm in this field?", "task_type": "management", "state": "Illinois", "county": "Champaign", "month_year": "2026-06"}
+    },
+    {
+      "id": "identification-image",
+      "title": "Investigate a plant symptom",
+      "description": "Add your own plant image to inspect visual observations and the evidence used for identification.",
+      "validated": false,
+      "image_required": true,
+      "input": {"question": "What could be affecting this plant, based on the visible symptoms and reliable evidence?", "task_type": "identification", "state": "Illinois", "county": "", "month_year": null}
+    }
+  ]
+}

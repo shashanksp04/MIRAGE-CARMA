@@ -1,0 +1,7 @@
+# Install on top of the cluster's existing mirage inference environment.
+fastapi>=0.115,<1
+uvicorn>=0.30,<1
+python-multipart>=0.0.18,<1
+httpx>=0.27,<1
+# Pydantic 2 and Pillow are already inference dependencies.
+pydantic>=2,<3

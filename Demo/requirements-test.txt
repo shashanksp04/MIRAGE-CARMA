@@ -1,0 +1,5 @@
+-r requirements.txt
+pytest>=8,<10
+# These are already in the cluster inference environment.
+qdrant-client==1.18.0
+Pillow>=11
